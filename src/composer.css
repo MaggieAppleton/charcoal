@@ -1,0 +1,97 @@
+.ex img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  user-select: none;
+}
+.composer-status { margin: 0; padding: 4px 10px 0; }
+.composer .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.composer #styleBtn, #styleSwitch { min-width: 0; }
+#styleName, .style-switch-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#styleBtn svg:last-child { width: 14px; height: 14px; color: var(--faint); }
+.some-settings .seg { flex-wrap: wrap; justify-content: flex-end; }
+.fullprompt p:first-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+:root:not([data-modality=pointer]) .composer #prompt:focus-visible { outline: none; }
+:root:not([data-modality=pointer]) .composer:has(#prompt:focus-visible) { border-radius: 16px; }
+
+.style-menu-positioner { z-index: 35; }
+.menu.style-menu { position: relative; max-height: var(--available-height); max-width: var(--available-width); overflow: auto; }
+.style-menu .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font: 500 13px/20px var(--font);
+  cursor: pointer;
+}
+.style-menu .menu-item[data-highlighted] { background: var(--hover); }
+.style-menu .menu-item[data-disabled] { color: var(--faint); cursor: default; }
+.style-menu .menu-item .chk { flex: none; }
+.style-menu .menu-item svg { width: 16px; height: 16px; }
+.style-menu .menu-item span:last-child { overflow-wrap: anywhere; }
+.style-menu .style-archive-count { margin-inline-start: auto; }
+.style-menu .style-archived-name { flex: 1; overflow-wrap: anywhere; }
+
+.style-pop .pophead { flex-wrap: wrap; align-items: center; row-gap: 2px; }
+.style-version { font-size: 13px; white-space: nowrap; }
+.style-rename { display: flex; gap: 4px; align-items: center; padding: 4px 8px 6px; }
+.style-rename input { min-width: 0; flex: 1; height: 28px; padding: 0 8px; border: none; border-radius: 6px; box-shadow: var(--shadow-control); }
+.style-list-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; min-width: 0; }
+.style-list-row span { min-width: 0; overflow-wrap: anywhere; }
+.style-list-row .btn { flex: none; }
+.style-message { margin: 4px 8px 8px; }
+.style-archive { display: grid; gap: 8px; padding: 4px 8px 8px; }
+.style-archive p { margin: 0; overflow-wrap: anywhere; }
+.style-archive > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.style-pop .rrow { grid-template-columns: 20px minmax(0, 1fr); }
+.style-pop .rrow h3 { margin: 0; min-width: 0; font: inherit; }
+.style-pop .rule-trigger {
+  appearance: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+.style-pop .rule[data-open] { background: #f7f6f2; }
+.style-pop .rule[data-open] .chev { transform: rotate(90deg); }
+.style-pop .rule[data-open] .rrow:hover { background: transparent; }
+.rule-panel {
+  height: var(--accordion-panel-height);
+  overflow: clip;
+  transition: height .18s ease;
+}
+.rule-panel[data-starting-style], .rule-panel[data-ending-style] { height: 0; }
+.rule-panel .rbody { min-width: 0; }
+.rule-panel .ex { overflow-wrap: anywhere; }
+.rule-remove { justify-self: start; }
+.style-pop .style-version-view strong { overflow-wrap: anywhere; }
+.style-pop .style-version-view p { margin: 4px 8px; overflow-wrap: anywhere; }
+@container frame (max-width: 340px) {
+  .composer .bar { flex-wrap: wrap; }
+  .some-settings .srow { flex-wrap: wrap; gap: 2px 8px; }
+  .some-settings .seg { justify-content: flex-start; }
+}
+.style-history-row { width: 100%; justify-content: flex-start; }
+.style-history-row svg { margin-left: auto; color: var(--faint); }
+.new-rule { margin: 2px 0; }
+.addex:disabled { cursor: default; opacity: .45; }

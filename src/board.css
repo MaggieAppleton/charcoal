@@ -1,0 +1,144 @@
+.board.board-canvas {
+  /* Leave space for the composer inset, note action and an 8px gap. */
+  --note-action-limit: calc(var(--board-height) - var(--composer-h) - 16px - 34px - 8px);
+  overflow: clip; padding: 0; touch-action: none; user-select: none;
+}
+.board-canvas:focus-visible { outline-offset: -4px; }
+.board-canvas[data-tool=hand] { cursor: grab; }
+.board-canvas[data-tool=hand]:active { cursor: grabbing; }
+.board-canvas:not([data-tool=select], [data-tool=hand]) { cursor: crosshair; }
+.board-canvas:not([data-tool=select]) .board-tile-hit { cursor: inherit; }
+.board-canvas .board-tile { position: absolute; }
+.board-canvas .board-tile-hit {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: inherit;
+}
+.board-canvas .board-tile-hit:focus-visible { outline-offset: 7px; }
+.board-canvas .board-tile-hit img { width: 100%; height: 100%; aspect-ratio: auto; object-fit: cover; }
+.board-tile .n, .board-tile .mark, .board-tile .dot { pointer-events: none; }
+.board-resize {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  z-index: 3;
+  width: 13px;
+  height: 13px;
+  background: var(--surface);
+  border: 1.5px solid var(--ink);
+  border-radius: 3px;
+  opacity: 0;
+  cursor: nwse-resize;
+}
+.board-tile:hover .board-resize,
+.board-tile:focus-within .board-resize,
+.board-tile .board-resize:focus-visible { opacity: 1; }
+.board-job {
+  position: absolute;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 4px;
+  padding: 8px;
+  border: 1px dashed var(--line);
+  border-radius: 3px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 18px;
+  overflow: hidden;
+  text-align: center;
+}
+.board-job:hover { background: var(--press); }
+.board-job span { max-width: 100%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.board-job > svg { width: 16px; height: 16px; }
+.board-job small { font-size: 12px; line-height: 16px; }
+.board-job-pending, .board-job-pending:hover { padding: 0; border: 0; background: #ededed; }
+.board-job-halftone { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.board-drawings { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; color: var(--ink); }
+.board-drawings g { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.board-drawings circle { stroke: none; }
+.board-mark { position: absolute; border-radius: 3px; pointer-events: none; }
+.board-mark-selected { outline: 1px solid var(--ink); outline-offset: 2px; }
+.board-note { background: #f7f6f2; border-radius: 6px; pointer-events: auto; }
+.board-note-text, .board-note textarea {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+  resize: none;
+  padding: calc(8px * var(--mark-zoom));
+  border-radius: inherit;
+  background: transparent;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  font-size: calc(14px * var(--mark-zoom));
+  line-height: calc(20px * var(--mark-zoom));
+}
+.board-note-text { pointer-events: none; align-content: start; }
+.board-note-text:focus-visible { pointer-events: auto; }
+.board-note textarea { background: var(--surface); overflow: auto; }
+.board-note-editing {
+  --editor-top: clamp(8px, var(--note-action-limit) - 96px, 52px);
+  --editor-width: min(max(156px, var(--note-width)), 100% - 60px);
+  --editor-height: min(max(120px, var(--note-height)), max(0px, var(--note-action-limit) - var(--editor-top)));
+  left: clamp(48px, var(--note-x), 100% - var(--editor-width) - 12px);
+  top: clamp(var(--editor-top), var(--note-y), var(--note-action-limit) - var(--editor-height));
+  width: var(--editor-width);
+  height: var(--editor-height);
+  z-index: 7;
+}
+.board-note-action { position: absolute; top: 100%; right: 0; margin-top: 6px; background-color: var(--surface); box-shadow: var(--shadow-control); }
+.board-note-action.icon {
+  left: clamp(48px - var(--note-x), 100% - 28px, var(--board-width) - var(--note-x) - 40px);
+  top: clamp(8px - var(--note-y), 100%, var(--note-action-limit) - var(--note-y));
+  right: auto;
+  z-index: 7;
+}
+.board-note-action:not(.primary):hover { background: var(--surface); }
+.board-marquee { position: absolute; pointer-events: none; border: 1px solid var(--focus); background: color-mix(in srgb, var(--focus) 9%, transparent); }
+.board-controls { position: absolute; top: 16px; left: 8px; z-index: 8; }
+.board-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px;
+  max-height: max(32px, calc(100dvh - var(--composer-h) - 44px));
+  overflow: auto;
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+}
+.board-rail .btn { flex: none; color: var(--muted); }
+.board-rail .btn:hover, .board-rail .btn[aria-pressed=true], .board-rail .btn[aria-expanded=true] { color: var(--ink); }
+.board-rail-sep { flex: none; height: 1px; margin: 2px 6px; background: var(--line); }
+.board-menu { bottom: 0; left: calc(100% + 6px); }
+.board-menu button { justify-content: space-between; }
+.board-menu button:disabled { color: var(--faint); cursor: default; }
+.board-menu button:disabled:hover { background: none; }
+.board-menu kbd { font: inherit; font-weight: 400; color: var(--muted); }
+.board-menu-separator { height: 1px; margin: 4px 8px; background: var(--line); }
+.board-error {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 6px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: min(360px, calc(100cqw - 64px));
+  padding: 4px 6px 4px 10px;
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+  color: var(--fail);
+}
+@media(pointer: coarse) {
+  .board-resize { opacity: 1; width: 18px; height: 18px; }
+}

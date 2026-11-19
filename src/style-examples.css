@@ -1,0 +1,42 @@
+/* Style rule examples: thumbnails, their edit popover and the focal area editor. */
+.sx-item { position: relative; }
+.sx-image { position: relative; display: block; width: 88px; height: 50px; overflow: hidden; border-radius: 4px; background: #e4e2dc; }
+.sx-image img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
+.sx-shade { position: absolute; box-shadow: 0 0 0 999px rgba(20, 19, 17, .38); outline: 1.5px solid var(--area); pointer-events: none; }
+
+.sx-trigger { display: block; width: 100%; padding: 0; border: 0; background: none; text-align: left; }
+.sx-trigger .sx-image { transition: box-shadow .12s ease; }
+.sx-trigger:hover .sx-image { box-shadow: 0 0 0 1px rgba(28, 26, 22, .22); }
+.sx-trigger[data-popup-open] .sx-image { box-shadow: 0 0 0 2px var(--ink); }
+.sx-caption { display: block; margin-top: 4px; font: 400 12px/16px var(--font); color: var(--muted); }
+.sx-caption b { display: block; font-weight: 500; color: var(--ink); }
+
+.sx-remove { position: absolute; right: -7px; top: -7px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 9px; background: var(--ink); color: #fff; opacity: 0; transition: opacity .12s; }
+.sx-remove svg { width: 12px; height: 12px; }
+.sx-item:hover .sx-remove { opacity: 1; }
+@media (hover: none) { .sx-remove { opacity: 1; } }
+
+.sx-pop { display: grid; gap: 8px; width: 272px; max-width: var(--available-width); padding: 8px; background: var(--surface); border-radius: 10px; box-shadow: var(--shadow-pop); transform-origin: var(--transform-origin); transition: opacity .16s ease-out, transform .16s ease-out; }
+.sx-pop[data-starting-style], .sx-pop[data-ending-style] { opacity: 0; transform: translateY(-3px); }
+.sx-kinds { display: flex; }
+.sx-kinds button { flex: 1; justify-content: center; }
+.sx-remove-action { justify-self: start; color: var(--muted); }
+.sx-remove-action:hover { color: var(--ink); }
+
+.sx-crop { position: relative; max-width: 100%; justify-self: center; touch-action: none; user-select: none; }
+.sx-crop.editing { cursor: crosshair; }
+.sx-crop-image { position: absolute; inset: 0; overflow: hidden; border-radius: 4px; }
+.sx-crop-image img { display: block; width: 100%; height: 100%; }
+.sx-crop .sx-shade { outline: none; }
+.sx-missing { display: grid; place-items: center; border-radius: 4px; background: #f1f0ec; color: var(--muted); font: 400 13px/20px var(--font); }
+.sx-area { position: absolute; padding: 0; border: 2px solid var(--area); border-radius: 0; background: none; cursor: move; }
+:root:not([data-modality=pointer]) .sx-area:focus-visible { outline-offset: 2px; border-radius: 2px; }
+.sx-area span { position: absolute; width: 10px; height: 10px; border: 1.5px solid var(--area); border-radius: 2px; background: #fff; }
+.sx-area span[data-corner=nw] { left: -6px; top: -6px; cursor: nwse-resize; }
+.sx-area span[data-corner=ne] { right: -6px; top: -6px; cursor: nesw-resize; }
+.sx-area span[data-corner=sw] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.sx-area span[data-corner=se] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sx-pop, .sx-trigger .sx-image, .sx-remove { transition: none; }
+}

@@ -1,0 +1,36 @@
+.workspace-menu-content {
+  width: min(250px, calc(100cqw - 32px));
+  max-height: calc(100dvh - 66px);
+  overflow: auto;
+  transform-origin: top right;
+  animation: popin .16s ease-out;
+}
+.workspace-menu-content .workspace-board-check { display: grid; place-items: center; width: 16px; flex: none }
+.workspace-board-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.workspace-project-actions { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px }
+.workspace-name-form { padding: 6px 8px 4px }
+.workspace-name-form input {
+  display: block; width: 100%; min-height: 32px; padding: 4px 8px; border: 0;
+  border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-control);
+}
+.workspace-archive-copy { margin: 0; font-size: 13px; overflow-wrap: anywhere }
+.workspace-archive-heading { margin: 0 }
+.workspace-archive-heading .workspace-board-name,
+.workspace-menu-content .disclosure-panel .workspace-board-name { flex: 1 }
+.workspace-archive-heading button svg:last-child { transition: transform .18s ease }
+.workspace-archive-heading button[aria-expanded=true] svg:last-child { transform: rotate(90deg) }
+.workspace-menu-content button:disabled { opacity: .45 }
+.workspace-menu-content button:disabled:hover { background: transparent; cursor: default }
+.workspace-name-actions { display: flex; gap: 4px; margin-top: 6px }
+.workspace-menu-content .workspace-name-actions .btn { width: auto; height: 28px }
+.workspace-menu-content .workspace-name-actions .primary { background: var(--ink); color: var(--surface) }
+.workspace-menu-content .workspace-name-actions .primary:disabled { opacity: .45 }
+.workspace-menu-error { padding: 4px 8px; color: var(--fail); font-size: 13px; overflow-wrap: anywhere }
+
+.workspace-switch span {
+  max-width: min(160px, 22cqw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-switch svg { width: 14px; height: 14px; color: var(--muted); }

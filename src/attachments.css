@@ -1,0 +1,87 @@
+.composer .tray {
+  --attachment-width: 64px;
+  --attachment-height: 46px;
+  --attachment-column-gap: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px var(--attachment-column-gap);
+  padding: 8px 8px 4px;
+}
+
+.composer .thumb {
+  width: var(--attachment-width);
+  height: var(--attachment-height);
+}
+
+.composer .thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  pointer-events: none;
+  user-select: none;
+}
+
+.composer .thumb .n { top: -4px; left: -4px; }
+.composer .thumb .bm { right: -3px; bottom: -3px; }
+.thumb .bm[data-guide='markup'] { color: var(--sketch); }
+.att.hl .thumb img { box-shadow: 0 0 0 2px var(--ink); }
+.att:not(.target) .thumb { touch-action: none; }
+.att:not(.target) .thumb:active { cursor: grabbing; }
+.att[data-dragging] { opacity: .55; }
+
+.att[data-insertion]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink);
+  pointer-events: none;
+}
+
+.att[data-insertion='before']::before { left: calc(-.5 * var(--attachment-column-gap) - 1px); }
+.att[data-insertion='after']::before { right: calc(-.5 * var(--attachment-column-gap) - 1px); }
+
+.composer .tray .att .x {
+  inset: -7px -3px auto auto;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  pointer-events: none;
+}
+
+.composer .tray .att .x::before {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.composer .tray .att .x svg { position: relative; }
+.composer .tray .att:hover .x,
+.composer .tray .att:focus-within .x {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+:root:not([data-modality=pointer]) .composer .tray .x:focus-visible { outline: none; }
+:root:not([data-modality=pointer]) .composer .tray .x:focus-visible::before {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .composer .tray .att .x { opacity: 1; pointer-events: auto; }
+}
+
+@container frame (max-width: 360px) {
+  .composer .tray {
+    --attachment-width: 56px;
+    --attachment-height: 42px;
+    --attachment-column-gap: 10px;
+  }
+}

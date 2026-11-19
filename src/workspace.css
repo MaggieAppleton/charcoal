@@ -1,0 +1,45 @@
+.frame { margin: 0; height: 100dvh; border-radius: 0; box-shadow: none }
+.frame-navigation { position: absolute; display: flex; gap: 4px; right: 16px; top: 16px; z-index: 8 }
+.frame-navigation .import { position: static }
+.frame-navigation .menu { top: 34px; right: 0 }
+.stage-art { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: inherit }
+.fig .ov { cursor: none }
+.review-overlay, .cursor { pointer-events: none }
+.check-heading { margin: 0 }
+.ck[data-open] { background: #f7f6f2; border-radius: 8px }
+.ck[data-open] .chev { transform: rotate(90deg) }
+.ck[data-open] .ck-row:hover { background: transparent }
+.disclosure-panel { overflow: hidden; height: var(--accordion-panel-height); transition: height .18s ease }
+.disclosure-panel[data-starting-style], .disclosure-panel[data-ending-style] { height: 0 }
+.review-more { margin-left: auto }
+.review-error, .run-dialog .entry { padding: 4px 8px }
+.review-error p { margin: 0 }
+.btn:disabled:not(.primary) { opacity: .42 }
+.rv-foot a { text-decoration: none }
+.run-dialog { width: min(440px,calc(100% - 32px)); max-height: min(600px,80dvh); border: 0; border-radius: 12px; padding: 8px; color: var(--ink); box-shadow: var(--shadow-pop) }
+.run-dialog::backdrop { background: rgba(236,235,230,.65); backdrop-filter: blur(4px) }
+.run-dialog .rv-head, .run-dialog .rv-foot { display: flex; align-items:center; gap: 6px; justify-content: space-between }
+.run-dialog .entry { overflow-wrap:anywhere }
+.run-dialog .entry .muted { white-space: pre-wrap }
+.run-dialog .entry + .entry { border-top: 1px solid var(--line) }
+.run-dialog .entry p { margin: 2px 0 6px }
+.rename-image-form .rv-title { margin: 0 }
+.rename-image-form input { width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-control); font: 400 14px/22px var(--font) }
+.rename-image-error { color: var(--fail); font-size: 13px; line-height: 20px }
+.run-list-row { width: 100%; justify-content: flex-start; min-width: 0 }
+.run-list-row span:first-of-type { overflow: hidden; text-overflow: ellipsis }
+.run-list-row .muted { margin-left: auto }
+.empty-import { position: absolute; top: 36%; left: 50%; transform: translate(-50%,-50%); z-index: 3; background: var(--surface); box-shadow: var(--shadow-control) }
+.status-toast { position: absolute; bottom: calc(var(--composer-h) + 26px); left: 50%; transform: translateX(-50%); display: flex; gap: 4px; align-items: center; max-width: min(480px,calc(100% - 110px)); padding: 4px 4px 4px 10px; border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-pop); z-index: 40 }
+.status-toast span { line-height: 18px }
+.status-toast .btn { flex: none }
+
+.tip { white-space: normal; overflow-wrap: anywhere }
+.load-state { margin: 24px }
+@container frame (max-width: 640px) {
+  .figcol { max-width: 100% }
+}
+
+.frame-navigation .menu svg { width: 16px; height: 16px }
+
+.review .rv-title, .review .ck-row > span, .review .ck-body { overflow-wrap: anywhere }
