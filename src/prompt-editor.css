@@ -1,0 +1,35 @@
+.composer .prompt-editor {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  max-height: 176px;
+  overflow-y: auto;
+  padding: 8px 10px 6px;
+  border: 0;
+  background: transparent;
+  font: 400 14px/28px var(--font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+.prompt-editor[data-empty]::before { content: attr(data-placeholder); color: var(--faint); pointer-events: none; }
+.prompt-image-mention {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  margin: 0 2px;
+  padding: 2px 6px 2px 2px;
+  border-radius: 5px;
+  background: var(--hover);
+  box-shadow: inset 0 0 0 1px var(--line);
+  vertical-align: middle;
+  white-space: nowrap;
+  font: 500 13px/20px var(--font);
+  cursor: default;
+}
+.prompt-image-mention img { width: 30px; height: 22px; object-fit: cover; border-radius: 3px; pointer-events: none; }
+.prompt-image-mention[data-missing=true] { color: var(--warn); padding-inline: 6px; }
+:root:not([data-modality=pointer]) .composer .prompt-editor:focus-visible { outline: none; }
+:root:not([data-modality=pointer]) .composer:has(.prompt-editor:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+@container frame (max-width: 640px) { .composer .prompt-editor { font-size: 16px; } }

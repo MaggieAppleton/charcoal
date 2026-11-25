@@ -1,0 +1,1165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sunburst canvas</title>
+<style>
+:root{
+  --canvas:#ecebe6; --surface:#fff; --ink:#1d1c1a; --muted:#6b6963; --faint:#a3a099;
+  --line:rgba(28,26,22,.10); --hover:rgba(28,26,22,.055); --press:rgba(28,26,22,.09);
+  --focus:#2f6fe0; --area:#ff5c33; --sketch:#0e8a8c; --style:#8a5a2b;
+  --pass:#2e7a4c; --warn:#a96400; --fail:#c2392d; --new:#2f6fe0;
+  --shadow-control:0 0 0 .5px rgba(0,0,0,.10),0 1px 1px -1px rgba(0,0,0,.12),0 1px 2px rgba(0,0,0,.06);
+  --shadow-pop:0 0 0 .5px rgba(0,0,0,.09),0 12px 28px -10px rgba(0,0,0,.20),0 1px 2px rgba(0,0,0,.05);
+  --font:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --composer-h:120px;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:#f8f7f4;color:var(--ink);font:400 14px/22px var(--font);-webkit-font-smoothing:antialiased}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus{outline:none}
+:root:not([data-modality=pointer]) :focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:6px}
+svg{display:block;flex:none}
+
+/* ---------- Simulator chrome (not part of the proposal) ---------- */
+.sim{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:12px 16px 10px;padding:6px 8px;border:1px dashed #b9b5aa;border-radius:8px;font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;color:#5b5850}
+.sim b{font-weight:600;color:#3d3b36;margin-right:4px}
+.sim button{height:24px;padding:0 8px;border:1px solid transparent;border-radius:5px;background:none;font:inherit;color:inherit}
+.sim button:hover{border-color:#cfcbc0}
+.sim button[aria-pressed=true]{background:#3d3b36;color:#fff}
+.sim p{margin:0;flex:1 1 260px;min-width:0;color:#77736a}
+
+/* ---------- Frame ---------- */
+.frame{position:relative;margin:0 16px 16px;height:720px;border-radius:12px;overflow:hidden;background:var(--canvas);box-shadow:0 0 0 1px rgba(0,0,0,.07);container-type:inline-size;container-name:frame}
+.frame.dropping::after{content:"";position:absolute;inset:8px;border:2px dashed rgba(28,26,22,.25);border-radius:10px;pointer-events:none;z-index:50}
+
+/* Board */
+.board{position:absolute;inset:0;overflow:auto;padding:72px 48px calc(var(--composer-h) + 56px);--tile:clamp(108px,15cqw,176px)}
+.board-inner{display:flex;align-items:flex-start;gap:clamp(40px,9cqw,120px);width:max-content;margin:0 auto}
+.refs{display:flex;gap:10px;align-items:flex-start}
+.refs .col{display:flex;flex-direction:column;gap:10px;width:calc(var(--tile) * .7)}
+.rows{display:flex;flex-direction:column;gap:44px}
+.row{display:flex;gap:6px}
+.row .tile{width:var(--tile)}
+.tile{position:relative;border-radius:3px;cursor:pointer;transition:transform .18s cubic-bezier(.2,.8,.2,1)}
+.tile canvas,.tile img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:3px;background:#ddd}
+.tile.tall canvas,.tile.tall img{aspect-ratio:3/4}
+.tile.square canvas,.tile.square img{aspect-ratio:1}
+.tile:hover canvas,.tile:hover img{box-shadow:0 0 0 1px rgba(28,26,22,.22)}
+.tile:active{transform:scale(.985)}
+.tile.sel::before{content:"";position:absolute;inset:-4px;border:2px solid var(--ink);border-radius:6px;pointer-events:none}
+.tile.hl::before{content:"";position:absolute;inset:-4px;border:2px solid var(--ink);border-radius:6px;box-shadow:0 0 0 4px rgba(28,26,22,.12);pointer-events:none}
+:root:not([data-modality=pointer]) .tile:focus-visible{outline-offset:7px}
+.tile .n{position:absolute;left:-10px;top:-10px}
+.n{min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:var(--ink);color:#fff;font:600 12px/20px var(--font);text-align:center;box-shadow:0 0 0 2px var(--canvas);font-variant-numeric:tabular-nums}
+.tile .mark{position:absolute;right:4px;bottom:4px;display:grid;place-items:center;width:20px;height:20px;border-radius:10px;background:#fff;color:var(--ink);box-shadow:var(--shadow-control)}
+.tile .mark svg{width:14px;height:14px}
+.tile .mark.area{color:var(--area)}
+.tile .mark.kept{color:var(--pass)}
+.tile .dot{position:absolute;right:-4px;top:-4px;width:10px;height:10px;border-radius:5px;background:var(--new);box-shadow:0 0 0 2px var(--canvas)}
+.tile.flash{animation:flash .7s ease}
+@keyframes flash{0%,100%{transform:none}35%{transform:scale(1.04)}}
+.tile.enter{animation:enter .45s cubic-bezier(.2,.8,.2,1)}
+@keyframes enter{from{opacity:0;transform:scale(.92)}}
+
+/* Context bar attached to the active image */
+.tile.active{z-index:7}
+.ctx{position:absolute;left:50%;top:calc(100% + 8px);transform:translateX(-50%);display:flex;gap:2px;padding:2px;background:var(--surface);border-radius:8px;box-shadow:var(--shadow-pop);z-index:6;white-space:nowrap;animation:pop .16s ease-out}
+@keyframes pop{from{opacity:0;transform:translate(-50%,-3px)}}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--ink);font:500 13px/20px var(--font);white-space:nowrap}
+.btn svg{width:16px;height:16px}
+.btn.lead{padding-left:8px}
+.btn:hover{background:var(--hover)}
+.btn:active{background:var(--press)}
+.btn.icon{width:28px;padding:0}
+.btn.primary{background:var(--ink);color:#fff}
+.btn.primary:hover{background:#3b3934}
+.btn.primary:disabled{background:#c9c6be;cursor:default}
+.btn[aria-pressed=true],.btn[aria-expanded=true]{background:var(--press)}
+.btn .muted{color:var(--muted);font-weight:400}
+.btn.warn svg{color:var(--warn)}
+.btn:disabled{cursor:default}
+.muted{color:var(--muted)}
+.import{position:absolute;top:16px;right:16px;z-index:5;color:var(--muted)}
+.import:hover{color:var(--ink)}
+
+/* Segmented */
+.seg{display:inline-flex;padding:2px;gap:2px;border-radius:8px;background:rgba(28,26,22,.06)}
+.seg button{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:500 13px/20px var(--font);white-space:nowrap}
+.seg button svg{width:16px;height:16px}
+.seg button.ico{width:28px;padding:0;justify-content:center}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-checked=true]{background:#fff;color:var(--ink);box-shadow:var(--shadow-control)}
+
+/* Composer */
+.composer{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);width:min(640px,calc(100% - 32px));background:var(--surface);border-radius:16px;box-shadow:var(--shadow-pop);padding:6px;z-index:20}
+:root:not([data-modality=pointer]) .composer:has(textarea:focus-visible){outline:2px solid var(--focus);outline-offset:2px}
+.composer textarea{display:block;width:100%;min-height:44px;max-height:144px;padding:8px 10px 4px;border:0;resize:none;background:transparent;font:400 14px/22px var(--font)}
+.composer textarea::placeholder{color:var(--faint)}
+.bar{display:flex;align-items:center;gap:4px;padding:2px}
+.bar .spacer{flex:1;min-width:0}
+.tray{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 8px 2px}
+.att{position:relative}
+.thumb{position:relative;display:block;width:44px;height:32px;padding:0;border:0;border-radius:5px;background:#ddd;overflow:visible}
+.thumb canvas{display:block;width:44px;height:32px;border-radius:5px}
+.thumb .n{position:absolute;left:-6px;top:-6px;min-width:18px;height:18px;line-height:18px;font-size:11px;padding:0 4px;box-shadow:0 0 0 2px #fff}
+.thumb .bm{position:absolute;right:-6px;bottom:-6px;display:grid;place-items:center;width:18px;height:18px;border-radius:9px;background:#fff;color:var(--area);box-shadow:var(--shadow-control)}
+.thumb .bm svg{width:12px;height:12px}
+.att.hl .thumb canvas{box-shadow:0 0 0 2px var(--ink)}
+.att .x{position:absolute;right:-7px;top:-7px;display:grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:9px;background:var(--ink);color:#fff;opacity:0;transition:opacity .12s}
+.att .x svg{width:12px;height:12px}
+.att:hover .x,.att:focus-within .x{opacity:1}
+.att.target .x{right:auto;left:30px}
+.limit{font-size:13px;line-height:20px;color:var(--warn)}
+.fullprompt{margin:4px 4px 2px;padding:8px 10px;border-radius:10px;background:#f5f4f0;font:400 13px/20px var(--font);max-height:180px;overflow:auto;animation:grow .2s ease-out}
+@keyframes grow{from{opacity:0;transform:translateY(4px)}}
+.fullprompt p{margin:0 0 6px}
+.fullprompt .you{color:var(--ink)}
+.fullprompt .img{color:var(--muted)}
+.fullprompt .sty{color:var(--style);text-decoration:underline dotted rgba(138,90,43,.45);text-underline-offset:3px}
+.fullprompt .after{margin:8px 0 0;color:var(--muted);font-size:12px;line-height:16px}
+
+/* Popovers */
+.pop{position:absolute;z-index:30;background:var(--surface);border-radius:10px;box-shadow:var(--shadow-pop);padding:4px;overflow:auto;animation:popin .16s ease-out}
+@keyframes popin{from{opacity:0;transform:translateY(4px)}}
+.srow{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:36px;padding:2px 2px 2px 8px;font:500 13px/20px var(--font)}
+.srow .lbl{color:var(--muted);font-weight:400}
+.pophead{display:flex;align-items:center;gap:6px;padding:2px 2px 4px 2px}
+.pophead .spacer{flex:1}
+.menu{position:absolute;z-index:35;padding:4px;background:#fff;border-radius:10px;box-shadow:var(--shadow-pop);min-width:180px}
+.menu button{display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 8px;border:0;border-radius:6px;background:none;font:500 13px/20px var(--font);text-align:left}
+.menu button:hover{background:var(--hover)}
+.menu button .chk{width:16px;color:var(--ink)}
+
+/* Rules */
+.rule{border-radius:8px}
+.rule.open{background:#f7f6f2}
+.rrow{display:grid;grid-template-columns:20px minmax(0,1fr) auto 16px;align-items:center;gap:8px;min-height:36px;padding:4px 8px;border-radius:6px}
+.rrow:hover{background:var(--hover)}
+.rule.open .rrow:hover{background:transparent}
+.rrow .open-btn{all:unset;display:contents;cursor:pointer}
+.rrow .t{font:500 13px/20px var(--font);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.rule.off .t{color:var(--faint)}
+.kinds{display:flex;gap:4px;color:var(--faint)}
+.kinds span{display:grid;place-items:center;width:20px;height:20px}
+.kinds svg{width:14px;height:14px}
+.kinds .on{color:var(--muted)}
+.chev{color:var(--faint);transition:transform .18s;cursor:pointer}
+.chev svg{width:16px;height:16px}
+.rule.open .chev{transform:rotate(90deg)}
+.check{appearance:none;width:16px;height:16px;margin:2px;border-radius:4px;border:1.5px solid #b8b4aa;background:#fff;display:grid;place-items:center;cursor:pointer}
+.check:checked{background:var(--ink);border-color:var(--ink)}
+.check:checked::after{content:"";width:8px;height:4px;border:2px solid #fff;border-top:0;border-right:0;transform:translate(0,-1px) rotate(-45deg)}
+.rbody{padding:2px 8px 10px 36px;display:grid;gap:10px}
+.field-l{display:block;font:500 13px/20px var(--font);color:var(--muted);margin-bottom:2px}
+.rbody textarea,.rbody input[type=text],.ovr textarea{display:block;width:100%;padding:6px 8px;border:0;border-radius:8px;background:#fff;box-shadow:var(--shadow-control);font:400 14px/22px var(--font);resize:none}
+.rbody textarea::placeholder,.ovr textarea::placeholder{color:var(--faint)}
+.exs{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}
+.ex{margin:0;width:88px}
+.ex canvas{display:block;width:88px;height:50px;border-radius:4px;object-fit:cover}
+.ex figcaption{font:400 12px/16px var(--font);color:var(--muted);margin-top:4px}
+.ex figcaption b{display:block;font-weight:500;color:var(--ink)}
+.addex{width:88px;height:50px;border-radius:4px;border:1px dashed #c9c5ba;background:none;color:var(--muted);display:grid;place-items:center}
+.addex:hover{color:var(--ink);border-color:#9d998f}
+.addex svg{width:16px;height:16px}
+
+/* Opened image layer */
+.scrim{position:absolute;inset:0;z-index:9;background:rgba(236,235,230,.86);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:fade .2s ease-out}
+@keyframes fade{from{opacity:0}}
+.focus{position:absolute;left:0;right:0;top:0;bottom:calc(var(--composer-h) + 24px);z-index:10;overflow:auto}
+.stage{min-height:100%;display:flex;align-items:center;justify-content:center;gap:20px;padding:16px}
+.figcol{display:flex;flex-direction:column;align-items:center;gap:10px;min-width:0}
+.tools{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:4px;padding:4px;background:#fff;border-radius:10px;box-shadow:var(--shadow-pop);animation:fade .25s .1s both}
+.tools .sep{width:1px;height:16px;background:var(--line);margin:0 4px}
+.tools .size{display:flex;align-items:center;gap:8px;padding:0 6px 0 8px;height:28px;font:500 13px/20px var(--font)}
+.tools .size output{min-width:44px;color:var(--muted);font-variant-numeric:tabular-nums}
+.tools input[type=range]{width:96px;accent-color:var(--ink)}
+.fig{position:relative;border-radius:4px;box-shadow:0 1px 2px rgba(0,0,0,.08),0 18px 40px -16px rgba(0,0,0,.3);transform-origin:0 0;background:#ddd;flex:none}
+.fig canvas{position:absolute;inset:0;width:100%;height:100%;border-radius:4px}
+.fig .ov{touch-action:none}
+.fig.painting .ov{cursor:none}
+.cursor{position:absolute;pointer-events:none;border-radius:50%;border:1.5px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.55),inset 0 0 0 1px rgba(0,0,0,.35);transform:translate(-50%,-50%)}
+.cursor.erase{border-style:dashed}
+.readout{margin:0;max-width:640px;min-height:40px;text-align:center;font:400 13px/20px var(--font);color:var(--muted);animation:fade .25s .1s both}
+.readout b{font-weight:500;color:var(--ink)}
+.readout .k-area{color:var(--area)}
+.readout .k-sketch{color:var(--sketch)}
+
+/* Review */
+.review{width:320px;flex:none;max-height:100%;overflow:auto;background:#fff;border-radius:12px;box-shadow:var(--shadow-pop);padding:4px;animation:fade .25s .1s both}
+.rv-head{padding:8px 8px 6px}
+.rv-title{font:500 15px/24px var(--font)}
+.link{all:unset;cursor:pointer;color:var(--muted);font:400 13px/20px var(--font);border-radius:4px}
+.link:hover{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+.rv-sub{display:flex;gap:8px;padding:12px 8px 2px;font:500 13px/20px var(--font)}
+.ck-row{display:grid;grid-template-columns:20px minmax(0,1fr) auto 16px;align-items:center;gap:8px;width:100%;min-height:36px;padding:4px 8px;border:0;border-radius:6px;background:none;text-align:left;font:500 13px/20px var(--font)}
+.ck-row:hover{background:var(--hover)}
+.ck-row .ico{display:grid;place-items:center;width:20px;height:20px}
+.ck-row .ico svg{width:16px;height:16px}
+.st-pass{color:var(--pass)} .st-warn{color:var(--warn)} .st-fail{color:var(--fail)}
+.ck-word{font-weight:400}
+.ck.open .chev{transform:rotate(90deg)}
+.ck.open{background:#f7f6f2;border-radius:8px}
+.ck.open .ck-row:hover{background:transparent}
+.ck-body{padding:0 8px 10px 36px;display:grid;gap:10px}
+.ck-body p{margin:0}
+.ck-acts{display:flex;gap:4px;margin-left:-10px}
+.ovr{display:grid;gap:6px}
+.ovr .acts{display:flex;gap:4px}
+.note{font-size:13px;line-height:20px;color:var(--muted)}
+.rv-foot{display:flex;align-items:center;gap:8px;padding:10px 8px 6px}
+.rv-foot .muted{font-size:13px;line-height:20px}
+
+/* Tooltip */
+.tip{position:absolute;z-index:60;pointer-events:none;max-width:240px;padding:4px 8px;border-radius:6px;background:var(--ink);color:#fff;font:500 12px/16px var(--font);white-space:nowrap;animation:fade .12s ease-out}
+
+/* Narrow */
+@container frame (max-width: 640px){
+  .board{padding:60px 16px calc(var(--composer-h) + 72px);--tile:calc((100cqw - 32px - 12px) / 3)}
+  .board-inner{flex-direction:column;gap:36px;width:auto}
+  .refs .col{width:calc((100cqw - 32px - 6px) / 2)}
+  .rows{gap:28px}
+  .row{flex-wrap:wrap}
+  .stage{flex-direction:column;justify-content:flex-start;padding:12px}
+  .review{width:100%;max-height:none}
+  .tools input[type=range]{width:72px}
+  #setSummary,.tools .size .muted{display:none}
+  .refs .col{width:calc((100cqw - 32px - 10px) / 2)}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="sim" role="group" aria-label="Mockup states">
+  <b>Mockup</b>
+  <button type="button" data-state="board" aria-pressed="true">Board</button>
+  <button type="button" data-state="attached">Images attached</button>
+  <button type="button" data-state="edit">Edit area</button>
+  <button type="button" data-state="style">Style</button>
+  <button type="button" data-state="review">Review</button>
+  <p id="simNote" aria-live="polite"></p>
+</div>
+
+<div class="frame" id="frame">
+  <div class="board" id="board" aria-label="Canvas">
+    <div class="board-inner">
+      <div class="refs" aria-label="References"><div class="col" id="colA"></div><div class="col" id="colB"></div></div>
+      <div class="rows">
+        <div class="row" id="rowStream" aria-label="Stream crossing variations"></div>
+        <div class="row" id="rowHill" aria-label="Hill path variations"></div>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn lead import" id="importBtn" type="button" data-icon="upload" data-tip="Or drop images anywhere">Import</button>
+  <input type="file" id="file" accept="image/*" multiple hidden>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <div class="focus" id="focus" hidden>
+    <div class="stage" id="stage">
+      <div class="figcol">
+        <div class="tools" id="editTools" role="toolbar" aria-label="Edit area tools">
+          <div class="seg" role="radiogroup" aria-label="Layer">
+            <button type="button" role="radio" data-layer="area" aria-checked="true" data-icon="brush" data-tip="Paint where the image may change (A)">Edit area</button>
+            <button type="button" role="radio" data-layer="sketch" aria-checked="false" data-icon="pen" data-tip="Draw guide lines on top (S)">Sketch</button>
+          </div>
+          <div class="seg" role="radiogroup" aria-label="Tool">
+            <button type="button" class="ico" role="radio" data-erase="0" aria-checked="true" aria-label="Paint" data-icon="circleDot" data-tip="Paint (B)"></button>
+            <button type="button" class="ico" role="radio" data-erase="1" aria-checked="false" aria-label="Erase" data-icon="eraser" data-tip="Erase (E)"></button>
+          </div>
+          <label class="size"><span class="muted">Size</span><input type="range" id="size" min="12" max="240" step="2" value="96" aria-label="Brush size"><output id="sizeOut">96 px</output></label>
+          <span class="sep"></span>
+          <button type="button" class="btn icon" id="undo" aria-label="Undo" data-icon="undo" data-tip="Undo (⌘Z)"></button>
+          <button type="button" class="btn icon" id="clear" aria-label="Clear this layer" data-icon="trash" data-tip="Clear layer"></button>
+          <button type="button" class="btn icon" id="eye" aria-label="Hide overlay" aria-pressed="false" data-icon="eye" data-tip="Hide overlay"></button>
+          <span class="sep"></span>
+          <button type="button" class="btn primary" id="done">Done</button>
+        </div>
+        <div class="tools" id="reviewTools" role="toolbar" aria-label="Compare" hidden>
+          <div class="seg" role="radiogroup" aria-label="Show">
+            <button type="button" role="radio" data-show="result" aria-checked="true">Result</button>
+            <button type="button" role="radio" data-show="source" aria-checked="false">Source</button>
+          </div>
+          <button type="button" class="btn lead" id="areaToggle" aria-pressed="true" data-icon="brush">Edit area</button>
+          <span class="sep"></span>
+          <button type="button" class="btn icon" id="closeReview" aria-label="Close" data-icon="x" data-tip="Close (Esc)"></button>
+        </div>
+        <div class="fig" id="fig">
+          <canvas id="figArt" aria-hidden="true"></canvas>
+          <canvas id="figAlt" aria-hidden="true" hidden></canvas>
+          <canvas class="ov" id="ov" role="img" aria-label="Painting surface"></canvas>
+          <div class="cursor" id="cursor" hidden></div>
+        </div>
+        <p class="readout" id="readout" aria-live="polite"></p>
+      </div>
+      <aside class="review" id="reviewPanel" aria-label="Review" hidden></aside>
+    </div>
+  </div>
+
+  <div class="composer" id="composer">
+    <div class="fullprompt" id="fullPrompt" hidden aria-label="Full prompt"></div>
+    <div class="tray" id="tray" hidden></div>
+    <textarea id="prompt" rows="1" aria-label="Prompt" placeholder="Describe an illustration"></textarea>
+    <div class="bar">
+      <button type="button" class="btn lead" id="styleBtn" aria-haspopup="dialog" aria-expanded="false" data-icon="palette"><span id="styleName">Field notes</span></button>
+      <button type="button" class="btn lead" id="setBtn" aria-haspopup="dialog" aria-expanded="false" data-icon="sliders">Sunburst 2.6 <span class="muted" id="setSummary">Medium</span></button>
+      <button type="button" class="btn icon" id="fpBtn" aria-expanded="false" aria-controls="fullPrompt" aria-label="Full prompt" data-icon="doc" data-tip="Full prompt"></button>
+      <span class="spacer"></span>
+      <button type="button" class="btn icon primary" id="send" aria-label="Send to Sunburst" data-icon="arrowUp" disabled></button>
+    </div>
+  </div>
+
+  <div class="pop" id="setPop" role="dialog" aria-label="Sunburst 2.6 settings" hidden style="width:316px">
+    <div class="srow"><span class="lbl">Quality</span><div class="seg" role="radiogroup" aria-label="Quality" data-set="quality"></div></div>
+    <div class="srow"><span class="lbl">Complexity</span><div class="seg" role="radiogroup" aria-label="Complexity" data-set="complexity"></div></div>
+    <div class="srow"><span class="lbl">Size</span><div class="seg" role="radiogroup" aria-label="Size" data-set="size"></div></div>
+    <div class="srow"><span class="lbl">Variations</span><div class="seg" role="radiogroup" aria-label="Variations" data-set="count"></div></div>
+  </div>
+
+  <div class="pop" id="stylePop" role="dialog" aria-label="Style" hidden style="width:380px"></div>
+  <div class="menu" id="styleMenu" role="menu" hidden></div>
+</div>
+
+<script>
+(() => {
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const frame = $('#frame'), board = $('#board'), composer = $('#composer'), promptEl = $('#prompt');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------- Icons (one 24px stroke family, drawn at 16px) ---------- */
+const ICON = {
+  upload:'<path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>',
+  arrowUp:'<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
+  brush:'<path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/>',
+  pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
+  circleDot:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor"/>',
+  undo:'<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>',
+  trash:'<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff:'<path d="M9.9 4.24A9 9 0 0 1 12 4c6.5 0 10 7 10 7a13 13 0 0 1-1.67 2.68"/><path d="M6.6 6.6A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="m2 2 20 20"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>',
+  x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  chevDown:'<path d="m6 9 6 6 6-6"/>',
+  chevRight:'<path d="m9 18 6-6-6-6"/>',
+  sliders:'<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/>',
+  palette:'<circle cx="13.5" cy="6.5" r="1" fill="currentColor"/><circle cx="17.5" cy="10.5" r="1" fill="currentColor"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor"/><circle cx="6.5" cy="12.5" r="1" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/>',
+  doc:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
+  lines:'<path d="M17 6H3"/><path d="M21 12H3"/><path d="M15 18H3"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  checkCircle:'<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  alertCircle:'<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  xCircle:'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
+};
+const ic = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
+$$('[data-icon]').forEach(el => el.insertAdjacentHTML('afterbegin', ic(el.dataset.icon)));
+$('#styleBtn').insertAdjacentHTML('beforeend', ic('chevDown'));
+$('#styleBtn svg:last-child').style.cssText = 'width:14px;height:14px;color:var(--faint)';
+
+/* ---------- Sample artwork painter (hand-drawn shapes, no image files) ---------- */
+function paint(cv, art, s) {
+  cv.width = Math.round(320 * s); cv.height = Math.round(180 * s);
+  const c = cv.getContext('2d'); c.setTransform(s, 0, 0, s, 0, 0);
+  const paper = '#f0dfb4', rust = '#af4c39', green = '#47695c', ink = '#252c28';
+  const poly = (col, pts) => { c.beginPath(); pts.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); c.closePath(); c.fillStyle = col; c.fill(); };
+  const oval = (col, x, y, rx, ry, r = 0) => { c.beginPath(); c.ellipse(x, y, rx, ry, r, 0, Math.PI * 2); c.fillStyle = col; c.fill(); };
+  const leaf = (col, x, y, sc, r) => { c.save(); c.translate(x, y); c.rotate(r); c.scale(sc, sc); c.beginPath(); c.moveTo(0, 0); c.bezierCurveTo(-31, -30, -10, -64, 9, -76); c.bezierCurveTo(33, -42, 27, -20, 0, 0); c.fillStyle = col; c.fill(); c.restore(); };
+  const person = (x, y, sc, coat) => {
+    c.save(); c.translate(x, y); c.scale(sc, sc);
+    oval(ink, 0, -48, 10, 11, .2);
+    poly(coat, [[-11, -37], [7, -39], [23, -13], [-16, -9]]);
+    poly(ink, [[-15, -12], [-1, -12], [-13, 16], [-30, 25], [-38, 22], [-21, 12]]);
+    poly(ink, [[3, -14], [16, -15], [15, 4], [34, 14], [31, 20], [6, 12], [-1, 1]]);
+    poly(coat, [[5, -35], [13, -35], [28, -18], [37, -20], [40, -15], [25, -10], [14, -20]]);
+    poly('#dfa456', [[32, -24], [44, -25], [44, -13], [32, -12]]);
+    c.restore();
+  };
+  const [kind, v] = art.split('-');
+  if (kind === 'walkers') {
+    c.fillStyle = paper; c.fillRect(0, 0, 320, 180);
+    oval('#dbc697', 82, 132, 54, 8); oval('#dbc697', 226, 137, 51, 7);
+    person(78, 99, 1.18, rust); person(223, 103, 1.11, green);
+  } else if (kind === 'leaves') {
+    c.fillStyle = paper; c.fillRect(0, 0, 320, 180);
+    [[65, 152, 1.3, -.45], [112, 145, 1, -.76], [141, 139, 1.3, .5], [206, 150, 1.35, -.52], [254, 147, 1.3, .4]].forEach(([x, y, sc, r], i) => leaf(i % 2 ? rust : green, x, y, sc, r));
+  } else if (kind === 'swatches') {
+    c.fillStyle = '#efe6d2'; c.fillRect(0, 0, 320, 180);
+    ['#b8aec4', '#5c6680', '#454d72', '#af4c39', '#dfa456', '#47695c'].forEach((col, i) => { c.beginPath(); c.roundRect(86 + (i % 3) * 52, 40 + Math.floor(i / 3) * 52, 44, 44, 4); c.fillStyle = col; c.fill(); });
+  } else if (kind === 'grain') {
+    c.fillStyle = paper; c.fillRect(0, 0, 320, 180);
+    oval(ink, 150, 100, 52, 64, .3); oval('#3c4a44', 186, 60, 30, 34); oval(rust, 132, 150, 22, 14);
+  } else if (kind === 'hill') {
+    const P = { day: { sky: paper, far: '#9caf94', hill: '#618b8d', path: '#e6d3a3', tree: '#47695c', sun: '#e9a95a' },
+                dusk: { sky: '#cbb5c3', far: '#7b7a9a', hill: '#4f5a7a', path: '#c7aa86', tree: '#353f5e', sun: '#e58a5a' },
+                night: { sky: '#2c3350', far: '#3a4566', hill: '#27304a', path: '#6d6655', tree: '#1b2236', sun: '#f3e3b0' } }[v];
+    c.fillStyle = P.sky; c.fillRect(0, 0, 320, 180);
+    oval(P.sun, 252, 44, v === 'night' ? 9 : 18, v === 'night' ? 9 : 18);
+    poly(P.far, [[0, 120], [70, 96], [140, 110], [220, 84], [320, 100], [320, 180], [0, 180]]);
+    c.beginPath(); c.ellipse(170, 214, 240, 120, 0, Math.PI, 2 * Math.PI); c.fillStyle = P.hill; c.fill();
+    poly(P.path, [[70, 180], [124, 180], [176, 124], [206, 97], [199, 96], [158, 120]]);
+    poly(P.tree, [[84, 132], [90, 132], [92, 100], [86, 100]]);
+    oval(P.tree, 88, 92, 22, 18); oval(P.tree, 102, 100, 14, 11);
+    if (v === 'night') { const g = c.createRadialGradient(216, 80, 1, 216, 80, 34); g.addColorStop(0, 'rgba(255,214,130,.55)'); g.addColorStop(1, 'rgba(255,214,130,0)'); c.fillStyle = g; c.fillRect(170, 40, 100, 90); }
+    person(200, 98, .5, v === 'night' ? '#c46a43' : rust);
+  } else {
+    const rough = kind === 'layout';
+    const bg = v === 'dusk' ? '#b8aec4' : v === 'pale' ? '#f1dfb7' : paper;
+    c.fillStyle = bg; c.fillRect(0, 0, 320, 180);
+    poly(rough ? '#bdc2af' : v === 'dusk' ? '#5c6680' : v === 'pale' ? '#c7cbb0' : '#9caf94', [[0, 130], [59, 114], [116, 123], [169, 116], [221, 88], [320, 104], [320, 180], [0, 180]]);
+    poly(rough ? '#89938b' : v === 'dusk' ? '#454d72' : v === 'pale' ? '#8fadae' : '#618b8d', [[0, 150], [81, 134], [129, 147], [194, 134], [250, 115], [320, 124], [320, 153], [232, 163], [184, 180], [0, 180]]);
+    poly('#d9c699', [[0, 159], [72, 151], [139, 157], [113, 174], [0, 180]]);
+    if (rough) {
+      oval('#915f52', 116, 104, 18, 26, .16); oval('#6a6454', 112, 74, 9, 11);
+      poly('#6a6454', [[104, 118], [113, 119], [93, 142], [84, 140]]);
+      poly('#6a6454', [[117, 117], [127, 115], [130, 136], [142, 141], [135, 144]]);
+    } else person(111, 110, 1.05, rust);
+    leaf(rough ? '#a1a391' : green, 24, 172, 1.05, -.55);
+    leaf(rough ? '#a1a391' : '#69835e', 35, 171, .84, .55);
+    c.save(); c.beginPath(); c.ellipse(249.6, 48.6, 51.2, 36, 0, 0, Math.PI * 2); c.clip();
+    if (v === 'dense') for (let i = 0; i < 15; i++) leaf(i % 2 ? green : '#726d42', 206 + i * 6, 80 + (i % 4) * 4, .36 + (i % 5) * .06, (i % 5 - 2) * .32);
+    else if (v === 'quiet') { leaf('#6e845c', 238, 72, .62, -.63); leaf('#6e845c', 268, 73, .54, .54); }
+    else if (v === 'edit') { leaf('#26322b', 236, 74, .7, -.63); leaf('#3d5245', 268, 74, .58, .54); }
+    else if (v === 'dusk') { leaf('#6a6890', 238, 72, .62, -.63); leaf('#6a6890', 268, 73, .54, .54); }
+    else if (v === 'pale') { leaf('#9fb08d', 238, 72, .62, -.63); }
+    c.restore();
+  }
+  let r = 17;
+  for (let i = 0; i < 3200; i++) {
+    r = (r * 16807) % 2147483647; const x = r % 320;
+    r = (r * 16807) % 2147483647; const y = r % 180;
+    c.fillStyle = i % 2 ? 'rgba(44,32,22,.10)' : 'rgba(255,247,218,.21)';
+    c.fillRect(x, y, i % 5 ? 1 : 2, 1);
+  }
+}
+function drawCover(ctx, src, W, H) {
+  const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+  if (!sw || !sh) return;
+  const k = Math.max(W / sw, H / sh), dw = sw * k, dh = sh * k;
+  ctx.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+
+/* ---------- Content ---------- */
+const ITEMS = {
+  layout:   { name: 'Layout sketch', art: 'layout', shape: 'tall', col: 'A' },
+  swatches: { name: 'Dusk swatches', art: 'swatches', shape: 'square', col: 'A' },
+  walkers:  { name: 'Two walkers', art: 'walkers', col: 'B' },
+  leaves:   { name: 'Leaf shapes', art: 'leaves', col: 'B' },
+  grain:    { name: 'Dry ink grain', art: 'grain', shape: 'tall', col: 'B' },
+  s1: { name: 'Stream crossing 1', art: 'stream-dense', row: 'Stream' },
+  s2: { name: 'Stream crossing 2', art: 'stream-quiet', row: 'Stream' },
+  s3: { name: 'Stream crossing 3', art: 'stream-dusk', row: 'Stream' },
+  s4: { name: 'Stream crossing 4', art: 'stream-pale', row: 'Stream' },
+  s5: { name: 'Stream crossing 5', art: 'stream-edit', row: 'Stream', from: 's1', candidate: true },
+  h1: { name: 'Hill path 1', art: 'hill-day', row: 'Hill' },
+  h2: { name: 'Hill path 2', art: 'hill-dusk', row: 'Hill' },
+  h3: { name: 'Hill path 3', art: 'hill-night', row: 'Hill' },
+};
+const nameOf = id => ITEMS[id].name;
+
+/* The edit area that produced Stream crossing 5: a freehand blob over the upper-right branches */
+const BLOB = (() => { const pts = []; for (let i = 0; i < 48; i++) { const a = i / 48 * Math.PI * 2; const k = 1 + .13 * Math.sin(3 * a + .6) + .07 * Math.cos(5 * a); pts.push([.78 + .17 * k * Math.cos(a), .27 + .23 * k * Math.sin(a)]); } return { layer: 'area', fill: true, pts }; })();
+
+const STYLE_RULES = () => ([
+  { id: 'fig', title: 'Figure shapes', on: true, prompt: 'Build figures from a rounded head, a wedge torso and two clear limb shapes.', check: 'Head, torso and limbs read as separate shapes at thumbnail size.', ex: [{ id: 'walkers', kind: 'Like this' }] },
+  { id: 'grain', title: 'Dry ink grain', on: true, prompt: 'Use dry ink grain inside filled shapes. Leave open paper clear.', check: '', ex: [{ id: 'grain', kind: 'Like this' }] },
+  { id: 'quiet', title: 'Quiet background', on: true, prompt: 'Keep background foliage to a few broad silhouettes.', check: 'Outside the main figure, foliage reads as broad silhouettes with no inner linework.', ex: [{ id: 's2', kind: 'Like this' }, { id: 's1', kind: 'Not this' }] },
+  { id: 'contrast', title: 'Focal contrast', on: true, prompt: '', check: 'The strongest light–dark edge sits on the main figure or what they hold.', ex: [] },
+  { id: 'margin', title: 'Headline space', on: false, prompt: 'Leave open paper across the top third for a headline.', check: 'The top third has no figures or dense marks.', ex: [] },
+]);
+
+const CHECKS = () => ({
+  pixel: { title: 'Outside the edit area', status: 'pass', word: 'Unchanged', obs: 'Every pixel outside the painted area matches Stream crossing 1.', loc: 'area' },
+  list: [
+    { id: 'quiet', title: 'Quiet background', status: 'pass', obs: 'Two broad leaf shapes replace the fine branches in the upper right.', loc: [.6, .04, .38, .48], ev: 'compare' },
+    { id: 'contrast', title: 'Focal contrast', status: 'warn', obs: 'At thumbnail size the dark leaf edge pulls the eye away from the notebook.', loc: [.66, .16, .22, .3], ev: 'thumb', revise: 'Lighten the dark leaf edge inside the painted area so the notebook keeps the strongest contrast.' },
+    { id: 'fig', title: 'Figure shapes', status: 'pass', obs: 'The figure sits outside the edit area and is carried over from Stream crossing 1.', loc: [.22, .26, .2, .5] },
+  ],
+});
+
+const OPTIONS = {
+  quality: ['Low', 'Medium', 'High'],
+  complexity: ['Low', 'Medium', 'High'],
+  size: ['Wide', 'Square', 'Tall'],
+  count: ['1', '2', '3', '4'],
+};
+const DIMS = { Wide: '1536 × 1024', Square: '1024 × 1024', Tall: '1024 × 1536' };
+
+const S = {
+  sel: [], active: null, target: null, mode: 'board',
+  strokes: {}, tool: { layer: 'area', erase: false, size: { area: 96, sketch: 10 } }, showOverlay: true,
+  settings: { quality: 'Medium', complexity: 'Low', size: 'Wide', count: '4' },
+  style: { name: 'Field notes', version: 3, dirty: false, enabled: true, rules: STYLE_RULES() },
+  openRule: null, review: null, showSource: false, showArea: true, openCheck: null,
+  kept: new Set(), seen: new Set(), showCandidate: false, limitMsg: '',
+};
+
+/* ---------- Board ---------- */
+function makeTile(id) {
+  const it = ITEMS[id];
+  const el = document.createElement('div');
+  el.className = 'tile' + (it.shape ? ' ' + it.shape : '');
+  el.dataset.id = id; el.tabIndex = 0;
+  el.setAttribute('role', 'button'); el.setAttribute('aria-pressed', 'false'); el.setAttribute('aria-label', it.name);
+  el.dataset.tip = it.name;
+  if (it.img) { el.append(it.img); it.src = it.img; }
+  else { const cv = document.createElement('canvas'); paint(cv, it.art, 1.6); el.append(cv); it.src = cv; }
+  it.el = el;
+  return el;
+}
+for (const id of Object.keys(ITEMS)) {
+  const it = ITEMS[id], el = makeTile(id);
+  if (it.col) $('#col' + it.col).append(el); else $('#row' + it.row).append(el);
+}
+
+function attachments() { return S.target ? [S.target, ...S.sel.filter(i => i !== S.target)] : [...S.sel]; }
+function hasArea(id) { return (S.strokes[id]?.list || []).some(s => s.layer === 'area' && !s.erase); }
+function hasSketch(id) { return (S.strokes[id]?.list || []).some(s => s.layer === 'sketch' && !s.erase); }
+function checksFor() { return S.review || (S.review = CHECKS()); }
+function openCount() { return checksFor().list.filter(c => c.status !== 'pass' && !c.override).length; }
+
+function toggle(id) {
+  if (id === S.target) { S.target = null; S.sel = S.sel.filter(i => i !== id); S.active = null; render(); return; }
+  if (S.sel.includes(id)) { S.sel = S.sel.filter(i => i !== id); if (S.active === id) S.active = null; }
+  else {
+    if (attachments().length >= 8) { S.limitMsg = `Eight images at most. Remove one to add ${nameOf(id)}.`; render(); setTimeout(() => { S.limitMsg = ''; render(); }, 2600); return; }
+    S.sel.push(id); S.active = id;
+  }
+  render();
+  if (S.active) keepClear(ITEMS[S.active].el);
+}
+/* Keep the active image and its bar above the composer */
+function keepClear(el) {
+  const bar = $('.ctx', el) || el, b = bar.getBoundingClientRect(), c = composer.getBoundingClientRect();
+  const over = b.bottom + 12 - c.top;
+  if (over > 0) board.scrollBy({ top: over, behavior: reduced ? 'auto' : 'smooth' });
+}
+
+board.addEventListener('click', e => {
+  if (e.target.closest('.ctx')) return;
+  const t = e.target.closest('.tile');
+  if (t) toggle(t.dataset.id); else if (S.active) { S.active = null; render(); }
+});
+board.addEventListener('keydown', e => {
+  const t = e.target.closest('.tile');
+  if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(t.dataset.id); }
+  if (e.key === 'Escape' && S.active) { S.active = null; render(); }
+});
+
+function renderTiles() {
+  const list = attachments();
+  for (const [id, it] of Object.entries(ITEMS)) {
+    const el = it.el; if (!el) continue;
+    el.hidden = it.candidate && !S.showCandidate;
+    const i = list.indexOf(id);
+    el.classList.toggle('sel', i >= 0);
+    el.classList.toggle('active', id === S.active && S.mode === 'board');
+    el.setAttribute('aria-pressed', String(i >= 0));
+    el.setAttribute('aria-label', it.name + (i >= 0 ? `, image ${i + 1}` : ''));
+    $$('.n,.mark,.dot,.ctx', el).forEach(x => x.remove());
+    if (i >= 0) el.insertAdjacentHTML('beforeend', `<span class="n" aria-hidden="true">${i + 1}</span>`);
+    if (S.kept.has(id)) el.insertAdjacentHTML('beforeend', `<span class="mark kept" data-tip="Kept">${ic('check')}</span>`);
+    else if (id === S.target && hasArea(id)) el.insertAdjacentHTML('beforeend', `<span class="mark area" data-tip="Has an edit area">${ic('brush')}</span>`);
+    if (it.candidate && !S.seen.has(id)) el.insertAdjacentHTML('beforeend', `<span class="dot" data-tip="New result"></span>`);
+    if (id === S.active && S.mode === 'board') {
+      const n = openCount();
+      el.insertAdjacentHTML('beforeend', `<div class="ctx" role="toolbar" aria-label="${it.name}">
+        ${it.candidate ? `<button type="button" class="btn lead ${n ? 'warn' : ''}" data-act="review">${ic(n ? 'alertCircle' : 'checkCircle')}${n ? n + ' to look at' : 'Checks passed'}</button>` : ''}
+        <button type="button" class="btn lead" data-act="edit">${ic('brush')}Edit area</button></div>`);
+    }
+  }
+}
+board.addEventListener('click', e => {
+  const b = e.target.closest('.ctx [data-act]'); if (!b) return;
+  const id = b.closest('.tile').dataset.id;
+  if (b.dataset.act === 'edit') openEdit(id);
+  if (b.dataset.act === 'review') openReview(id);
+});
+
+/* ---------- Composer ---------- */
+const tray = $('#tray');
+function renderTray() {
+  const list = attachments();
+  tray.hidden = !list.length && !S.limitMsg;
+  tray.innerHTML = list.map((id, i) => {
+    const t = id === S.target;
+    const tip = t ? `Image ${i + 1}: ${nameOf(id)}, edit area` : `Image ${i + 1}: ${nameOf(id)}`;
+    return `<div class="att${t ? ' target' : ''}" data-id="${id}">
+      <button type="button" class="thumb" data-act="locate" data-tip="${tip}" aria-label="${t ? 'Open edit area on ' : 'Find '}${nameOf(id)}"><canvas width="88" height="64"></canvas><span class="n" aria-hidden="true">${i + 1}</span>${t ? `<span class="bm">${ic('brush')}</span>` : ''}</button>
+      <button type="button" class="x" data-act="remove" aria-label="Remove ${nameOf(id)}">${ic('x')}</button></div>`;
+  }).join('') + (S.limitMsg ? `<span class="limit" role="status">${S.limitMsg}</span>` : '');
+  $$('.att', tray).forEach(a => { const cv = $('canvas', a); drawCover(cv.getContext('2d'), ITEMS[a.dataset.id].src, 88, 64); });
+}
+tray.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const id = b.closest('.att').dataset.id;
+  if (b.dataset.act === 'remove') {
+    if (id === S.target) S.target = null;
+    S.sel = S.sel.filter(i => i !== id); if (S.active === id) S.active = null;
+    render(); promptEl.focus();
+  } else if (id === S.target) openEdit(id);
+  else { const el = ITEMS[id].el; el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: reduced ? 'auto' : 'smooth' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+});
+tray.addEventListener('pointerover', e => { const a = e.target.closest('.att'); if (a) ITEMS[a.dataset.id].el.classList.add('hl'); });
+tray.addEventListener('pointerout', e => { const a = e.target.closest('.att'); if (a) ITEMS[a.dataset.id].el.classList.remove('hl'); });
+board.addEventListener('pointerover', e => { const t = e.target.closest('.tile'); if (t) $(`.att[data-id="${t.dataset.id}"]`, tray)?.classList.add('hl'); });
+board.addEventListener('pointerout', e => { const t = e.target.closest('.tile'); if (t) $(`.att[data-id="${t.dataset.id}"]`, tray)?.classList.remove('hl'); });
+
+function autosize() { promptEl.style.height = 'auto'; promptEl.style.height = Math.min(promptEl.scrollHeight, 144) + 'px'; }
+promptEl.addEventListener('input', () => { autosize(); renderFullPrompt(); $('#send').disabled = !promptEl.value.trim(); });
+promptEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+$('#send').addEventListener('click', send);
+function send() { if (!promptEl.value.trim()) return; note('Nothing is sent from this mockup. In the build, results land beside their sources.'); }
+
+function renderComposer() {
+  const list = attachments();
+  promptEl.placeholder = S.target ? (hasArea(S.target) ? 'What should change in the painted area?' : 'What should change in this image?') : list.length ? 'Describe how to use these images' : 'Describe an illustration';
+  $('#styleName').textContent = S.style.enabled ? S.style.name : 'No style';
+  $('#setSummary').textContent = S.settings.quality;
+  $('#send').disabled = !promptEl.value.trim();
+}
+
+/* Full prompt: exactly what goes with the request, coloured by where each part comes from */
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function renderFullPrompt() {
+  const fp = $('#fullPrompt'); if (fp.hidden) return;
+  const list = attachments(), parts = [];
+  if (S.target) {
+    const a = hasArea(S.target), k = hasSketch(S.target);
+    parts.push(`<span class="img">Edit image 1 (${esc(nameOf(S.target))}). ${a ? 'Change only the painted area and keep every other pixel.' : 'The whole image may change.'}${k ? ' Sketch lines show where things go.' : ''}</span>`);
+  }
+  parts.push(`<span class="you">${esc(promptEl.value.trim()) || '<span class="muted">Your prompt</span>'}</span>`);
+  list.forEach((id, i) => { if (id !== S.target) parts.push(`<span class="img">Image ${i + 1} is ${esc(nameOf(id))}.</span>`); });
+  if (S.style.enabled) S.style.rules.filter(r => r.on && r.prompt.trim()).forEach(r => parts.push(`<span class="sty" data-tip="${esc(S.style.name)}: ${esc(r.title)}">${esc(r.prompt.trim())}</span>`));
+  const checks = S.style.enabled ? S.style.rules.filter(r => r.on && r.check.trim()).map(r => r.title) : [];
+  fp.innerHTML = `<p>${parts.join(' ')}</p><p class="after">Sunburst 2.6 at ${S.settings.quality.toLowerCase()} quality and ${S.settings.complexity.toLowerCase()} complexity, ${DIMS[S.settings.size]}, ${S.settings.count} ${S.settings.count === '1' ? 'variation' : 'variations'}.${checks.length ? `<br>Each result is then checked for ${checks.join(', ').replace(/, ([^,]*)$/, ' and $1')}.` : ''}</p>`;
+}
+$('#fpBtn').addEventListener('click', () => {
+  const fp = $('#fullPrompt'); fp.hidden = !fp.hidden;
+  $('#fpBtn').setAttribute('aria-expanded', String(!fp.hidden)); renderFullPrompt();
+});
+
+/* ---------- Popovers ---------- */
+let openPopState = null;
+function openPop(pop, trigger) {
+  closePop();
+  pop.hidden = false; trigger.setAttribute('aria-expanded', 'true');
+  openPopState = { pop, trigger }; placePop();
+}
+function placePop() {
+  if (!openPopState) return;
+  const { pop, trigger } = openPopState;
+  const fr = frame.getBoundingClientRect(), tr = trigger.getBoundingClientRect();
+  pop.style.maxWidth = (fr.width - 24) + 'px';
+  pop.style.maxHeight = (tr.top - fr.top - 20) + 'px';
+  const w = pop.offsetWidth;
+  pop.style.left = Math.max(12, Math.min(tr.left - fr.left - 4, fr.width - w - 12)) + 'px';
+  pop.style.bottom = (fr.bottom - tr.top + 8) + 'px';
+}
+function closePop(returnFocus) {
+  if (!openPopState) return;
+  const { pop, trigger } = openPopState;
+  pop.hidden = true; trigger.setAttribute('aria-expanded', 'false'); $('#styleMenu').hidden = true;
+  openPopState = null; if (returnFocus) trigger.focus();
+}
+document.addEventListener('pointerdown', e => {
+  if (!openPopState) return;
+  if (e.target.closest('.pop,.menu') || openPopState.trigger.contains(e.target)) return;
+  closePop();
+});
+
+/* Settings */
+for (const seg of $$('[data-set]', $('#setPop'))) {
+  const key = seg.dataset.set;
+  seg.innerHTML = OPTIONS[key].map(o => `<button type="button" role="radio" data-v="${o}" ${key === 'size' ? `data-tip="${DIMS[o]}"` : ''}>${o}</button>`).join('');
+  seg.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.settings[key] = b.dataset.v; renderSettings(); renderComposer(); renderFullPrompt(); });
+}
+function renderSettings() { for (const seg of $$('[data-set]')) for (const b of $$('button', seg)) b.setAttribute('aria-checked', String(S.settings[seg.dataset.set] === b.dataset.v)); }
+$('#setBtn').addEventListener('click', e => { const p = $('#setPop'); p.hidden ? openPop(p, e.currentTarget) : closePop(); });
+
+/* Style */
+const stylePop = $('#stylePop');
+function renderStyle() {
+  const st = S.style;
+  if (!st.enabled) {
+    stylePop.innerHTML = `<div class="pophead"><button type="button" class="btn" id="styleSwitch" aria-haspopup="menu">No style${ic('chevDown')}</button></div>
+      <p style="margin:4px 8px 10px" class="muted">Your prompt goes to Sunburst as written, with no checks afterwards.</p>`;
+    return;
+  }
+  stylePop.innerHTML = `<div class="pophead">
+      <button type="button" class="btn" id="styleSwitch" aria-haspopup="menu">${esc(st.name)}${ic('chevDown')}</button>
+      <span class="muted" style="font-size:13px">Version ${st.version}${st.dirty ? ', edited' : ''}</span>
+      <span class="spacer"></span>
+      ${st.dirty ? `<button type="button" class="btn primary" id="saveStyle">Save as version ${st.version + 1}</button>` : ''}
+    </div>
+    <div role="list">${st.rules.map(ruleHTML).join('')}</div>
+    <button type="button" class="btn lead" id="addRule" style="margin:2px 0 2px">${ic('plus')}New rule</button>`;
+  $$('.exs canvas', stylePop).forEach(cv => drawCover(cv.getContext('2d'), ITEMS[cv.dataset.src].src, 176, 100));
+}
+function ruleHTML(r) {
+  const open = S.openRule === r.id;
+  return `<div class="rule${open ? ' open' : ''}${r.on ? '' : ' off'}" data-rule="${r.id}" role="listitem">
+    <div class="rrow">
+      <input type="checkbox" class="check" ${r.on ? 'checked' : ''} aria-label="Use ${esc(r.title)}" data-tip="${r.on ? 'On for this style' : 'Off'}">
+      <span class="t" data-act="open">${esc(r.title) || '<span class="muted">Untitled rule</span>'}</span>
+      <span class="kinds" data-act="open"><span class="${r.prompt.trim() ? 'on' : ''}" data-tip="${r.prompt.trim() ? 'Adds to the prompt' : 'Adds nothing to the prompt'}">${ic('lines')}</span><span class="${r.check.trim() ? 'on' : ''}" data-tip="${r.check.trim() ? 'Checks each result' : 'No check'}">${ic('eye')}</span></span>
+      <button type="button" class="chev" data-act="open" aria-expanded="${open}" aria-label="${open ? 'Close' : 'Open'} ${esc(r.title)}" style="all:unset;cursor:pointer;color:var(--faint);display:grid;place-items:center;width:16px;height:16px;border-radius:4px;transition:transform .18s;${open ? 'transform:rotate(90deg)' : ''}">${ic('chevRight')}</button>
+    </div>
+    ${open ? `<div class="rbody">
+      <label><span class="field-l">Name</span><input type="text" data-f="title" value="${esc(r.title)}"></label>
+      <label><span class="field-l">Adds to the prompt</span><textarea rows="2" data-f="prompt" placeholder="Words Sunburst gets with every request">${esc(r.prompt)}</textarea></label>
+      <label><span class="field-l">Looks for in each result</span><textarea rows="2" data-f="check" placeholder="What a passing image shows">${esc(r.check)}</textarea></label>
+      <div><span class="field-l">Examples</span><div class="exs">${r.ex.map(x => `<figure class="ex"><canvas width="176" height="100" data-src="${x.id}"></canvas><figcaption><b>${x.kind}</b>${esc(nameOf(x.id))}</figcaption></figure>`).join('')}<button type="button" class="addex" data-act="addex" data-tip="Add selected art as an example" aria-label="Add selected art as an example">${ic('plus')}</button></div></div>
+    </div>` : ''}
+  </div>`;
+}
+stylePop.addEventListener('click', e => {
+  const t = e.target;
+  if (t.closest('#styleSwitch')) return openStyleMenu(t.closest('#styleSwitch'));
+  if (t.closest('#saveStyle')) { S.style.version++; S.style.dirty = false; renderStyle(); placePop(); note(`Saved Field notes version ${S.style.version}. Earlier results keep the version they used.`); return; }
+  if (t.closest('#addRule')) {
+    const id = 'r' + Date.now(); S.style.rules.push({ id, title: '', on: true, prompt: '', check: '', ex: [] });
+    S.openRule = id; S.style.dirty = true; renderStyle(); placePop(); $(`[data-rule="${id}"] input[type=text]`, stylePop).focus(); return;
+  }
+  const rule = t.closest('.rule'); if (!rule) return;
+  const r = S.style.rules.find(x => x.id === rule.dataset.rule);
+  if (t.closest('[data-act=addex]')) {
+    const add = attachments().filter(id => !r.ex.some(x => x.id === id));
+    if (!add.length) { note('Select art on the canvas first, then add it here.'); return; }
+    add.forEach(id => r.ex.push({ id, kind: 'Like this' })); S.style.dirty = true; renderStyle(); placePop(); return;
+  }
+  if (t.closest('[data-act=open]')) { S.openRule = S.openRule === r.id ? null : r.id; renderStyle(); placePop(); $(`[data-rule="${r.id}"] .chev`, stylePop)?.focus({ preventScroll: true }); }
+});
+stylePop.addEventListener('change', e => {
+  if (!e.target.matches('.check')) return;
+  const r = S.style.rules.find(x => x.id === e.target.closest('.rule').dataset.rule);
+  r.on = e.target.checked; S.style.dirty = true; renderStyle(); placePop(); renderFullPrompt();
+  $(`[data-rule="${r.id}"] .check`, stylePop).focus();
+});
+stylePop.addEventListener('input', e => {
+  const f = e.target.dataset.f; if (!f) return;
+  const ruleEl = e.target.closest('.rule'), r = S.style.rules.find(x => x.id === ruleEl.dataset.rule);
+  r[f] = e.target.value;
+  const wasDirty = S.style.dirty; S.style.dirty = true;
+  if (f === 'title') $('.t', ruleEl).textContent = r.title || 'Untitled rule';
+  const k = $$('.kinds span', ruleEl); k[0].classList.toggle('on', !!r.prompt.trim()); k[1].classList.toggle('on', !!r.check.trim());
+  if (!wasDirty) { const sel = [e.target.selectionStart, e.target.selectionEnd]; renderStyle(); const el = $(`[data-rule="${r.id}"] [data-f="${f}"]`, stylePop); el.focus(); el.setSelectionRange(...sel); placePop(); }
+  renderFullPrompt();
+});
+function openStyleMenu(btn) {
+  const m = $('#styleMenu'), fr = frame.getBoundingClientRect(), br = btn.getBoundingClientRect();
+  m.innerHTML = [['Field notes', true], ['No style', false]].map(([n, v]) => `<button type="button" role="menuitemradio" aria-checked="${S.style.enabled === v}" data-v="${v}"><span class="chk">${S.style.enabled === v ? ic('check') : ''}</span>${n}</button>`).join('');
+  m.hidden = false;
+  m.style.left = (br.left - fr.left) + 'px'; m.style.top = (br.bottom - fr.top + 4) + 'px';
+  $('button', m).focus();
+}
+$('#styleMenu').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  S.style.enabled = b.dataset.v === 'true'; $('#styleMenu').hidden = true;
+  renderStyle(); renderComposer(); renderFullPrompt(); placePop(); $('#styleSwitch', stylePop).focus();
+});
+$('#styleBtn').addEventListener('click', e => { if (stylePop.hidden) { renderStyle(); openPop(stylePop, e.currentTarget); } else closePop(); });
+
+/* ---------- Opened image layer (edit area and review) ---------- */
+const focusEl = $('#focus'), scrim = $('#scrim'), fig = $('#fig'), figArt = $('#figArt'), figAlt = $('#figAlt'), ov = $('#ov'), cursor = $('#cursor');
+const MW = 960, MH = 540;
+const mk = () => { const c = document.createElement('canvas'); c.width = MW; c.height = MH; return c; };
+const maskC = mk(), sketchC = mk(), tmpC = mk();
+const hatch = (() => {
+  const p = document.createElement('canvas'); p.width = p.height = 14; const c = p.getContext('2d');
+  c.fillStyle = 'rgba(255,92,51,.5)'; c.fillRect(0, 0, 14, 14);
+  c.strokeStyle = 'rgba(255,92,51,1)'; c.lineWidth = 3;
+  [[-7, 7, 7, -7], [0, 14, 14, 0], [7, 21, 21, 7]].forEach(([a, b, d, f]) => { c.beginPath(); c.moveTo(a, b); c.lineTo(d, f); c.stroke(); });
+  return tmpC.getContext('2d').createPattern(p, 'repeat');
+})();
+
+function paintFigure(canvas, id) {
+  const it = ITEMS[id];
+  if (it.img) { canvas.width = MW; canvas.height = MH; drawCover(canvas.getContext('2d'), it.img, MW, MH); }
+  else paint(canvas, it.art, 3);
+}
+function layoutFocus() {
+  if (S.mode === 'board') return;
+  const fw = frame.clientWidth, fh = frame.clientHeight, ch = composer.offsetHeight;
+  const narrow = fw < 700;
+  const tools = S.mode === 'edit' ? $('#editTools') : $('#reviewTools');
+  const reserved = tools.offsetHeight + 10 + Math.max($('#readout').offsetHeight, 40) + 10 + 32;
+  const availH = fh - (ch + 24) - reserved;
+  let availW = fw - 32;
+  if (S.mode === 'review' && !narrow) availW -= 340;
+  let w = Math.min(availW, Math.max(availH, 120) * 16 / 9, 1040);
+  if (narrow) w = availW - (S.mode === 'review' ? 0 : 0);
+  w = Math.max(160, Math.floor(w));
+  fig.style.width = w + 'px'; fig.style.height = Math.round(w * 9 / 16) + 'px';
+  if (S.mode === 'review') $('#reviewPanel').style.maxHeight = narrow ? 'none' : (fh - ch - 24 - 32) + 'px';
+  const dpr = devicePixelRatio || 1;
+  ov.width = Math.round(w * dpr); ov.height = Math.round(w * 9 / 16 * dpr);
+  renderOverlay(); updateCursorSize();
+}
+function flipFrom(rect, reverse, done) {
+  if (reduced || !rect || !rect.width) { done && done(); return; }
+  const to = fig.getBoundingClientRect();
+  const from = `translate(${rect.left - to.left}px,${rect.top - to.top}px) scale(${rect.width / to.width},${rect.height / to.height})`;
+  const kf = [{ transform: from }, { transform: 'none' }];
+  const a = fig.animate(reverse ? kf.reverse() : kf, { duration: reverse ? 220 : 340, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  a.onfinish = () => done && done();
+}
+function showLayer(id, mode) {
+  closePop();
+  S.mode = mode; S.focusId = id; S.active = null;
+  scrim.hidden = false; focusEl.hidden = false;
+  $('#stage').classList.toggle('is-review', mode === 'review');
+  $('#editTools').hidden = mode !== 'edit'; $('#reviewTools').hidden = mode !== 'review';
+  $('#reviewPanel').hidden = mode !== 'review';
+  fig.classList.toggle('painting', mode === 'edit');
+  ov.setAttribute('aria-label', mode === 'edit' ? `Paint the edit area on ${nameOf(id)}` : nameOf(id));
+  paintFigure(figArt, id);
+  figAlt.hidden = true;
+  render();
+  layoutFocus();
+  const tile = ITEMS[id].el;
+  flipFrom(tile && !tile.hidden ? tile.getBoundingClientRect() : null, false);
+}
+function closeLayer() {
+  if (S.mode === 'board') return;
+  const id = S.focusId, tile = ITEMS[id].el, was = S.mode;
+  const finish = () => {
+    scrim.hidden = true; focusEl.hidden = true; S.mode = 'board'; cursor.hidden = true;
+    render();
+    if (was === 'edit') promptEl.focus({ preventScroll: true }); else tile.focus({ preventScroll: true });
+  };
+  flipFrom(tile.getBoundingClientRect(), true, finish);
+}
+scrim.addEventListener('click', closeLayer);
+focusEl.addEventListener('click', e => { if (e.target === focusEl || e.target.id === 'stage') closeLayer(); });
+
+/* Edit area */
+function openEdit(id) {
+  S.target = id; S.sel = S.sel.filter(x => x !== id);
+  if (!S.strokes[id]) S.strokes[id] = { list: [], undo: [] };
+  showLayer(id, 'edit'); renderTools(); renderReadout();
+  $('[data-layer=area]').focus({ preventScroll: true });
+}
+function drawStroke(ctx, st, W, H) {
+  ctx.save();
+  ctx.globalCompositeOperation = st.erase ? 'destination-out' : 'source-over';
+  ctx.fillStyle = ctx.strokeStyle = st.layer === 'area' ? '#000' : '#0e8a8c';
+  const p = st.pts;
+  if (st.fill) { ctx.beginPath(); p.forEach(([x, y], i) => i ? ctx.lineTo(x * W, y * H) : ctx.moveTo(x * W, y * H)); ctx.closePath(); ctx.fill(); ctx.restore(); return; }
+  const lw = st.size * W; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (p.length === 1) { ctx.beginPath(); ctx.arc(p[0][0] * W, p[0][1] * H, lw / 2, 0, Math.PI * 2); ctx.fill(); }
+  else {
+    ctx.beginPath(); ctx.moveTo(p[0][0] * W, p[0][1] * H);
+    for (let i = 1; i < p.length - 1; i++) ctx.quadraticCurveTo(p[i][0] * W, p[i][1] * H, (p[i][0] + p[i + 1][0]) / 2 * W, (p[i][1] + p[i + 1][1]) / 2 * H);
+    const l = p[p.length - 1]; ctx.lineTo(l[0] * W, l[1] * H); ctx.stroke();
+  }
+  ctx.restore();
+}
+function renderLayers(list) {
+  const m = maskC.getContext('2d'), s = sketchC.getContext('2d');
+  m.clearRect(0, 0, MW, MH); s.clearRect(0, 0, MW, MH);
+  for (const st of list) drawStroke(st.layer === 'area' ? m : s, st, MW, MH);
+}
+function tintMask(alpha) {
+  const t = tmpC.getContext('2d');
+  t.globalCompositeOperation = 'source-over'; t.clearRect(0, 0, MW, MH); t.drawImage(maskC, 0, 0);
+  t.globalCompositeOperation = 'source-in'; t.fillStyle = hatch; t.fillRect(0, 0, MW, MH);
+  t.globalCompositeOperation = 'source-over';
+  const o = ov.getContext('2d'); o.globalAlpha = alpha; o.drawImage(tmpC, 0, 0, ov.width, ov.height); o.globalAlpha = 1;
+}
+let raf = 0;
+function renderOverlay() {
+  const o = ov.getContext('2d'); o.clearRect(0, 0, ov.width, ov.height);
+  if (S.mode === 'edit') {
+    if (!S.showOverlay) return;
+    renderLayers(S.strokes[S.focusId].list);
+    tintMask(.62);
+    o.drawImage(sketchC, 0, 0, ov.width, ov.height);
+  } else if (S.mode === 'review') {
+    const W = ov.width, H = ov.height, d = devicePixelRatio || 1;
+    if (S.showArea) {
+      renderLayers([BLOB]); tintMask(.28);
+      o.save(); o.setLineDash([6 * d, 5 * d]); o.lineWidth = 1.5 * d; o.strokeStyle = 'rgba(255,92,51,.95)';
+      o.beginPath(); BLOB.pts.forEach(([x, y], i) => i ? o.lineTo(x * W, y * H) : o.moveTo(x * W, y * H)); o.closePath(); o.stroke(); o.restore();
+    }
+    const c = S.openCheck && checksFor().list.find(x => x.id === S.openCheck);
+    if (c && Array.isArray(c.loc)) {
+      const [x, y, w, h] = c.loc; const col = c.status === 'pass' || c.override ? '#2e7a4c' : '#a96400';
+      o.save(); o.lineWidth = 2 * d; o.strokeStyle = '#fff'; o.beginPath(); o.roundRect(x * W, y * H, w * W, h * H, 6 * d); o.stroke();
+      o.strokeStyle = col; o.setLineDash([]); o.lineWidth = 2 * d; o.beginPath(); o.roundRect(x * W - 2 * d, y * H - 2 * d, w * W + 4 * d, h * H + 4 * d, 7 * d); o.stroke(); o.restore();
+    }
+  }
+}
+function coverage() {
+  const c = document.createElement('canvas'); c.width = 192; c.height = 108; const x = c.getContext('2d');
+  x.drawImage(maskC, 0, 0, 192, 108); const d = x.getImageData(0, 0, 192, 108).data;
+  let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 127) n++;
+  return n / (192 * 108);
+}
+function renderReadout() {
+  const r = $('#readout');
+  if (S.mode === 'review') {
+    r.innerHTML = S.showSource ? `<b>${nameOf('s1')}</b> before the edit` : `<b>${nameOf('s5')}</b>`; return;
+  }
+  const id = S.focusId; renderLayers(S.strokes[id].list);
+  const pct = Math.round(coverage() * 100), sk = hasSketch(id);
+  let t;
+  if (pct === 0 && !hasArea(id)) t = sk ? `No edit area painted, so Sunburst may change the whole of <b>${nameOf(id)}</b>.` : `Paint over the part of <b>${nameOf(id)}</b> that should change.`;
+  else t = `Sunburst can change the <span class="k-area">painted ${Math.max(pct, 1)}%</span>. The other ${100 - Math.max(pct, 1)}% keeps its original pixels.`;
+  if (sk) t += ` <span class="k-sketch">Sketch lines</span> show where things go; they don't limit the change.`;
+  r.innerHTML = t;
+}
+function renderTools() {
+  const L = S.tool.layer;
+  $$('#editTools [data-layer]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.layer === L)));
+  $$('#editTools [data-erase]').forEach(b => b.setAttribute('aria-checked', String((b.dataset.erase === '1') === S.tool.erase)));
+  $('#size').value = S.tool.size[L]; $('#sizeOut').textContent = S.tool.size[L] + ' px';
+  const e = $('#eye'); e.setAttribute('aria-pressed', String(!S.showOverlay)); e.innerHTML = ic(S.showOverlay ? 'eye' : 'eyeOff');
+  e.setAttribute('aria-label', S.showOverlay ? 'Hide overlay' : 'Show overlay'); e.dataset.tip = S.showOverlay ? 'Hide overlay' : 'Show overlay';
+  $('#undo').disabled = !S.strokes[S.focusId]?.undo.length;
+  cursor.classList.toggle('erase', S.tool.erase);
+  updateCursorSize();
+}
+function updateCursorSize() {
+  const w = fig.clientWidth; const px = S.tool.size[S.tool.layer] / 1536 * w;
+  const d = Math.max(px, 6); cursor.style.width = cursor.style.height = d + 'px';
+}
+$('#editTools').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.layer) S.tool.layer = b.dataset.layer;
+  if (b.dataset.erase) S.tool.erase = b.dataset.erase === '1';
+  if (b.id === 'undo') undo();
+  if (b.id === 'clear') clearLayer();
+  if (b.id === 'eye') { S.showOverlay = !S.showOverlay; renderOverlay(); }
+  if (b.id === 'done') { closeLayer(); return; }
+  renderTools();
+});
+$('#size').addEventListener('input', e => { S.tool.size[S.tool.layer] = +e.target.value; renderTools(); });
+function snapshot() { const s = S.strokes[S.focusId]; s.undo.push(s.list.slice()); if (s.undo.length > 60) s.undo.shift(); }
+function undo() { const s = S.strokes[S.focusId]; if (!s.undo.length) return; s.list = s.undo.pop(); after(); }
+function clearLayer() { const s = S.strokes[S.focusId]; if (!s.list.some(x => x.layer === S.tool.layer)) return; snapshot(); s.list = s.list.filter(x => x.layer !== S.tool.layer); after(); }
+function after() { renderOverlay(); renderReadout(); renderTools(); renderTiles(); renderTray(); renderComposer(); renderFullPrompt(); }
+
+let drawing = null;
+const norm = e => { const r = ov.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+ov.addEventListener('pointerdown', e => {
+  if (S.mode !== 'edit' || e.button !== 0) return;
+  e.preventDefault(); ov.setPointerCapture(e.pointerId);
+  if (!S.showOverlay) { S.showOverlay = true; renderTools(); }
+  snapshot();
+  drawing = { layer: S.tool.layer, erase: S.tool.erase, size: S.tool.size[S.tool.layer] / 1536, pts: [norm(e)] };
+  S.strokes[S.focusId].list.push(drawing); renderOverlay();
+});
+ov.addEventListener('pointermove', e => {
+  if (S.mode !== 'edit') return;
+  const r = fig.getBoundingClientRect();
+  cursor.hidden = false; cursor.style.left = (e.clientX - r.left) + 'px'; cursor.style.top = (e.clientY - r.top) + 'px';
+  if (!drawing) return;
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const ev of evs) drawing.pts.push(norm(ev));
+  if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderOverlay(); });
+});
+const endStroke = () => { if (!drawing) return; drawing = null; after(); };
+ov.addEventListener('pointerup', endStroke); ov.addEventListener('pointercancel', endStroke);
+ov.addEventListener('pointerleave', () => { if (!drawing) cursor.hidden = true; });
+
+/* Review */
+function openReview(id) {
+  S.seen.add(id); checksFor();
+  S.showSource = false; S.openCheck = null;
+  showLayer(id, 'review');
+  paintFigure(figAlt, ITEMS[id].from);
+  renderReviewTools(); renderReview(); renderReadout(); layoutFocus();
+  $('#reviewPanel .ck-row')?.focus({ preventScroll: true });
+}
+function statusIcon(c) { const s = c.override ? 'pass' : c.status; return `<span class="ico st-${s}">${ic(s === 'pass' ? 'checkCircle' : s === 'warn' ? 'alertCircle' : 'xCircle')}</span>`; }
+function statusWord(c) { if (c.override) return `<span class="ck-word st-pass">Fine</span>`; return `<span class="ck-word st-${c.status}">${c.word || { pass: 'Passed', warn: 'Look again', fail: 'Failed' }[c.status]}</span>`; }
+function renderReview() {
+  const R = checksFor(), kept = S.kept.has('s5');
+  const row = (c, id) => {
+    const open = S.openCheck === id;
+    return `<div class="ck${open ? ' open' : ''}" data-ck="${id}">
+      <button type="button" class="ck-row" aria-expanded="${open}">${statusIcon(c)}<span>${c.title}</span>${statusWord(c)}<span class="chev" style="display:grid;place-items:center;color:var(--faint);transition:transform .18s">${ic('chevRight')}</span></button>
+      ${open ? `<div class="ck-body">
+        <p>${c.obs}</p>
+        ${c.override ? `<p class="note">Your call: ${esc(c.override)}</p>` : ''}
+        ${c.ev ? `<div class="exs">${evidenceHTML(c)}</div>` : ''}
+        ${c.status !== 'pass' && !c.override ? `<div class="ck-acts" data-acts><button type="button" class="btn" data-act="revise">Revise</button><button type="button" class="btn" data-act="fine">It's fine</button></div>
+        <div class="ovr" hidden><textarea rows="2" aria-label="Why it works" placeholder="Why it works"></textarea><div class="acts"><button type="button" class="btn primary" data-act="save">Save</button><button type="button" class="btn" data-act="cancel">Cancel</button></div></div>` : ''}
+      </div>` : ''}
+    </div>`;
+  };
+  $('#reviewPanel').innerHTML = `
+    <div class="rv-head"><div class="rv-title">${nameOf('s5')}</div><button type="button" class="link" id="srcLink">Edited from ${nameOf('s1')}</button></div>
+    ${row(R.pixel, 'pixel')}
+    <div class="rv-sub">${S.style.name}<span class="muted" style="font-weight:400">Version 3</span></div>
+    ${R.list.map(c => row(c, c.id)).join('')}
+    <div class="rv-foot">${kept ? `<button type="button" class="btn lead" disabled>${ic('check')}Kept</button>` : `<button type="button" class="btn primary" id="keepBtn">Keep</button>`}
+      <span class="muted">${openCount() ? `${openCount()} to look at` : 'All checks passed'}</span></div>`;
+  $$('#reviewPanel canvas[data-ev]').forEach(drawEvidence);
+}
+function evidenceHTML(c) {
+  if (c.ev === 'compare') return `<figure class="ex"><canvas width="176" height="100" data-ev="like"></canvas><figcaption><b>Like this</b>${nameOf('s2')}</figcaption></figure><figure class="ex"><canvas width="176" height="100" data-ev="crop"></canvas><figcaption><b>This result</b>Same area</figcaption></figure>`;
+  return `<figure class="ex"><canvas width="176" height="100" data-ev="tsrc"></canvas><figcaption><b>Before</b>Thumbnail size</figcaption></figure><figure class="ex"><canvas width="176" height="100" data-ev="tres"></canvas><figcaption><b>This result</b>Thumbnail size</figcaption></figure>`;
+}
+const hi = {};
+function hiRes(id) { if (!hi[id]) { hi[id] = document.createElement('canvas'); paint(hi[id], ITEMS[id].art, 3); } return hi[id]; }
+function drawEvidence(cv) {
+  const x = cv.getContext('2d'), k = cv.dataset.ev, crop = [.58, .02, .4, .5];
+  const cropDraw = src => { const [a, b, w, h] = crop; x.drawImage(src, a * MW, b * MH, w * MW, h * MH, 0, 0, 176, 100); };
+  if (k === 'like') cropDraw(hiRes('s2'));
+  if (k === 'crop') cropDraw(hiRes('s5'));
+  if (k === 'tsrc' || k === 'tres') { x.imageSmoothingQuality = 'high'; x.drawImage(hiRes(k === 'tsrc' ? 's1' : 's5'), 0, 0, 176, 99); }
+}
+$('#reviewPanel').addEventListener('click', e => {
+  const t = e.target, R = checksFor();
+  if (t.closest('#srcLink')) { S.showSource = !S.showSource; renderReviewTools(); return; }
+  if (t.closest('#keepBtn')) { S.kept.add('s5'); renderReview(); renderTiles(); $('#reviewPanel .rv-foot button').focus(); note('Kept. In the build this marks Stream crossing 5 as approved for export.'); return; }
+  const ck = t.closest('.ck'); if (!ck) return;
+  const id = ck.dataset.ck, c = id === 'pixel' ? R.pixel : R.list.find(x => x.id === id);
+  const act = t.closest('[data-act]')?.dataset.act;
+  if (act === 'fine') { $('[data-acts]', ck).hidden = true; $('.ovr', ck).hidden = false; $('.ovr textarea', ck).focus(); return; }
+  if (act === 'cancel') { $('[data-acts]', ck).hidden = false; $('.ovr', ck).hidden = true; $('[data-act=fine]', ck).focus(); return; }
+  if (act === 'save') { const v = $('.ovr textarea', ck).value.trim(); if (!v) { $('.ovr textarea', ck).focus(); return; } c.override = v; renderReview(); renderOverlay(); $(`[data-ck="${id}"] .ck-row`).focus(); renderTiles(); return; }
+  if (act === 'revise') {
+    S.strokes.s5 = { list: [BLOB], undo: [] };
+    S.target = 's5'; S.sel = []; promptEl.value = c.revise; autosize();
+    closeLayer(); setTimeout(() => { promptEl.focus(); promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length); }, reduced ? 0 : 240);
+    render(); return;
+  }
+  if (t.closest('.ck-row')) { S.openCheck = S.openCheck === id ? null : id; if (id === 'pixel' && S.openCheck) S.showArea = true; renderReview(); renderReviewTools(); $(`[data-ck="${id}"] .ck-row`).focus(); }
+});
+function renderReviewTools() {
+  $$('#reviewTools [data-show]').forEach(b => b.setAttribute('aria-checked', String((b.dataset.show === 'source') === S.showSource)));
+  $('#areaToggle').setAttribute('aria-pressed', String(S.showArea));
+  figAlt.hidden = !S.showSource;
+  renderOverlay(); renderReadout();
+}
+$('#reviewTools').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.show) S.showSource = b.dataset.show === 'source';
+  if (b.id === 'areaToggle') S.showArea = !S.showArea;
+  if (b.id === 'closeReview') { closeLayer(); return; }
+  renderReviewTools();
+});
+
+/* ---------- Keyboard ---------- */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (!$('#styleMenu').hidden) { $('#styleMenu').hidden = true; $('#styleSwitch')?.focus(); return; }
+    if (openPopState) { closePop(true); return; }
+    if (S.mode !== 'board') { closeLayer(); return; }
+  }
+  if (S.mode !== 'edit' || e.target.matches('textarea,input[type=text]')) return;
+  const k = e.key.toLowerCase();
+  if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); undo(); return; }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (k === '[' || k === ']') { const L = S.tool.layer; S.tool.size[L] = Math.max(12, Math.min(240, S.tool.size[L] + (k === ']' ? 12 : -12))); renderTools(); }
+  else if (k === 'e') { S.tool.erase = true; renderTools(); }
+  else if (k === 'b') { S.tool.erase = false; renderTools(); }
+  else if (k === 'a') { S.tool.layer = 'area'; renderTools(); }
+  else if (k === 's') { S.tool.layer = 'sketch'; renderTools(); }
+});
+document.addEventListener('pointerdown', () => { document.documentElement.dataset.modality = 'pointer'; }, true);
+document.addEventListener('keydown', e => { if (['Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) document.documentElement.dataset.modality = 'keyboard'; }, true);
+
+/* ---------- Import (local only: images stay in this page) ---------- */
+let impN = 0;
+function addFiles(files) {
+  let added = 0;
+  for (const f of files) {
+    if (!f.type.startsWith('image/')) continue;
+    const id = 'imp' + (++impN), img = new Image();
+    img.alt = ''; img.src = URL.createObjectURL(f);
+    ITEMS[id] = { name: f.name.replace(/\.[^.]+$/, ''), img, col: 'B' };
+    const el = makeTile(id); el.classList.add('enter');
+    $('#colB').prepend(el); added++;
+    img.onload = () => render();
+  }
+  if (added) { board.scrollTo({ left: 0, top: 0, behavior: reduced ? 'auto' : 'smooth' }); note(`Added ${added} ${added === 1 ? 'image' : 'images'} to the canvas. Nothing leaves this page.`); }
+}
+$('#importBtn').addEventListener('click', () => $('#file').click());
+$('#file').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+frame.addEventListener('dragover', e => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); frame.classList.add('dropping'); } });
+frame.addEventListener('dragleave', e => { if (!frame.contains(e.relatedTarget)) frame.classList.remove('dropping'); });
+frame.addEventListener('drop', e => { e.preventDefault(); frame.classList.remove('dropping'); addFiles(e.dataTransfer.files); });
+
+/* ---------- Tooltip ---------- */
+const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; tip.setAttribute('role', 'tooltip'); frame.append(tip);
+let tipT = 0, tipFor = null;
+function showTip(el) {
+  clearTimeout(tipT);
+  tipT = setTimeout(() => {
+    if (!el.isConnected) return;
+    tip.textContent = el.dataset.tip; tip.hidden = false;
+    const fr = frame.getBoundingClientRect(), r = el.getBoundingClientRect();
+    let left = r.left - fr.left + r.width / 2 - tip.offsetWidth / 2;
+    left = Math.max(8, Math.min(left, fr.width - tip.offsetWidth - 8));
+    let top = r.top - fr.top - tip.offsetHeight - 6; if (top < 4) top = r.bottom - fr.top + 6;
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+  }, 380);
+}
+function hideTip() { clearTimeout(tipT); tip.hidden = true; tipFor = null; }
+frame.addEventListener('pointerover', e => { const el = e.target.closest('[data-tip]'); if (el && el !== tipFor) { tipFor = el; showTip(el); } else if (!el) hideTip(); });
+frame.addEventListener('pointerdown', hideTip);
+frame.addEventListener('focusin', e => { const el = e.target.closest('[data-tip]'); if (el && document.documentElement.dataset.modality === 'keyboard') showTip(el); });
+frame.addEventListener('focusout', hideTip);
+frame.addEventListener('pointerleave', hideTip);
+
+/* ---------- Render + layout ---------- */
+function render() { renderTiles(); renderTray(); renderComposer(); renderFullPrompt(); }
+new ResizeObserver(() => {
+  frame.style.setProperty('--composer-h', composer.offsetHeight + 'px');
+  placePop(); layoutFocus();
+}).observe(composer);
+new ResizeObserver(() => { placePop(); layoutFocus(); }).observe(frame);
+
+/* ---------- Mockup states (simulator only) ---------- */
+const NOTES = {
+  board: 'Click art to attach it to the prompt. Import is top right, or drop files anywhere.',
+  attached: 'Numbers match art and thumbnails. Hover either to find the other. The page icon shows the full prompt.',
+  edit: 'Paint with the pointer. [ and ] resize, E erases, B paints, ⌘Z undoes, Esc finishes.',
+  style: 'Open a rule to edit what it adds to the prompt and what it looks for. Edits update the full prompt.',
+  review: 'Switch Result and Source above the image. Open a check to see its evidence and where it looked.',
+};
+let noteT = 0;
+function note(t) { const n = $('#simNote'); n.textContent = t; clearTimeout(noteT); noteT = setTimeout(() => { n.textContent = NOTES[curState]; }, 4200); }
+let curState = 'board';
+function setState(name) {
+  curState = name;
+  $$('.sim [data-state]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.state === name)));
+  clearTimeout(noteT); $('#simNote').textContent = NOTES[name];
+  closePop(); hideTip();
+  scrim.hidden = true; focusEl.hidden = true; S.mode = 'board'; cursor.hidden = true;
+  Object.assign(S, { sel: [], active: null, target: null, strokes: {}, openRule: null, review: null, openCheck: null, showSource: false, showArea: true, showOverlay: true, limitMsg: '', showCandidate: false });
+  S.kept = new Set(); S.seen = new Set();
+  S.style = { name: 'Field notes', version: 3, dirty: false, enabled: true, rules: STYLE_RULES() };
+  S.tool = { layer: 'area', erase: false, size: { area: 96, sketch: 10 } };
+  $('#fullPrompt').hidden = true; $('#fpBtn').setAttribute('aria-expanded', 'false');
+  promptEl.value = '';
+  if (name === 'attached' || name === 'style') {
+    S.sel = ['layout', 'walkers', 'leaves'];
+    promptEl.value = 'A researcher crosses a shallow stream with a notebook. Use the layout from 1, the walkers from 2 and the leaf shapes from 3.';
+  }
+  if (name === 'edit') { S.sel = ['leaves']; promptEl.value = 'Replace the fine branches with two broad leaf shapes like image 2.'; }
+  if (name === 'review') { S.showCandidate = true; }
+  autosize(); render(); board.scrollTo(0, 0);
+  requestAnimationFrame(() => {
+    if (name === 'edit') openEdit('s1');
+    if (name === 'style') { S.openRule = 'quiet'; renderStyle(); openPop(stylePop, $('#styleBtn')); }
+    if (name === 'review') { S.active = 's5'; render(); openReview('s5'); }
+  });
+}
+$$('.sim [data-state]').forEach(b => b.addEventListener('click', () => setState(b.dataset.state)));
+renderSettings();
+setState('board');
+})();
+</script>
+</body>
+</html>

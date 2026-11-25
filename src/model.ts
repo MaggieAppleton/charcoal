@@ -24,6 +24,8 @@ export const DEFAULT_SETTINGS: Settings = {quality: 'Medium', complexity: 'Low',
 export type GuideMode = 'whole' | 'mask' | 'markup'
 export type GuideLayer = 'area' | 'sketch'
 export type Guide = {
+  tool?: 'pen' | 'arrow' | 'rectangle' | 'text'
+  text?: string
   layer: GuideLayer
   size: number
   erase?: boolean
@@ -32,13 +34,29 @@ export type Guide = {
 }
 
 export type PromptPart = {kind: 'img' | 'you' | 'sty'; text: string; title?: string}
+export type PromptBlock = {id: string; text: string}
+export type ReferenceRole = 'composition' | 'colour' | 'lighting' | 'texture' | 'style' | 'subject'
+export type ReferenceDirection = {roles: ReferenceRole[]; use: string; avoid: string}
+export type StudyMode = 'illustration' | 'composition' | 'lighting' | 'colour' | 'texture'
+export type VariationAxis = 'composition' | 'colour' | 'style' | 'lighting' | 'freeform'
 export type Workspace = {
+  inlineReferencesVersion?: 1
+  referenceDirections?: Record<string, ReferenceDirection>
+  studyMode?: StudyMode
+  variationAxis?: VariationAxis
+  studyDirections?: string[]
+  pinnedIds?: string[]
+  runBriefs?: Record<string, {prompt: string; referenceDirections: Record<string, ReferenceDirection>}>
+  pendingSubmission?: {fingerprint: string; ids: string[]; recoveryOnly?: boolean}
   prompt: string
+  metaphorDraft?: {context: string; briefId?: string; article?: import('./MetaphorCard').ArticleSource}
+  promptBlockIds?: string[]
   settings: Settings
   styleStore: StyleStore
   imageIds: string[]
   // Canvas visibility only. Runs and libraries continue to reference the asset.
   deletedImageIds?: string[]
+  deletedRunIds?: string[]
   referenceIds?: string[]
   attachments: string[]
   active: string | null
@@ -68,6 +86,7 @@ export type Candidate = {
   reviewError?: string
   kept?: boolean
   seen?: boolean
+  createdAt?: string
 }
 
 export type Run = {
@@ -105,4 +124,5 @@ export type Boot = {
   runs: Run[]
   demo: boolean
   provider: 'fixture' | 'live' | 'unconfigured'
+  sessionKey?: boolean
 }

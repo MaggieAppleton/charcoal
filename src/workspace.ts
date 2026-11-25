@@ -2,6 +2,7 @@ import type {Asset,Boot,Workspace,Run} from './model'
 import {DEFAULT_SETTINGS} from './model'
 import {DEFAULT_CAMERA,placeImages,type BoardImage,type Point,type Rect} from './board-geometry'
 import {demoStyleStore,emptyStyleStore} from './styles'
+import {migrateInlineReferences,recoverInlineReferences} from './inline-reference-draft.js'
 
 const seeds: Record<string,Pick<BoardImage,'seedGroup'|'shape'>> = {
   layout:{seedGroup:'A',shape:'tall'},
@@ -13,14 +14,21 @@ const seeds: Record<string,Pick<BoardImage,'seedGroup'|'shape'>> = {
   h1:{seedGroup:'Hill'},h2:{seedGroup:'Hill'},h3:{seedGroup:'Hill'},
 }
 export function initialWorkspace(data:Boot):Workspace {
-  return data.workspace ?? {
+  return recoverInlineReferences(migrateInlineReferences(data.workspace ?? {
     prompt:'',settings:DEFAULT_SETTINGS,styleStore:data.demo?demoStyleStore():emptyStyleStore(),
     imageIds:data.demo?Object.keys(seeds):[],attachments:[],active:null,target:null,guideMode:'whole',
     guides:{},positions:{},camera:DEFAULT_CAMERA,annotations:[],
-  }
+  }),data.assets)
 }
 
-export function itemsFor(w:Workspace,assets:Asset[],runs:Run[],demo:boolean) {
+export const NEW_RESULT_MS = 60_000
+
+export function candidateAgeMs(candidate:{createdAt?:string},run:{createdAt:string},now:number) {
+  const timestamp = Date.parse(candidate.createdAt ?? run.createdAt)
+  return Number.isFinite(timestamp) ? Math.max(0,now-timestamp) : NEW_RESULT_MS
+}
+
+export function itemsFor(w:Workspace,assets:Asset[],runs:Run[],demo:boolean,now=Date.now()) {
   const map=new Map(assets.map((a)=>[a.id,a]))
   const items:BoardImage[] = w.imageIds.flatMap((id)=>{
     const a=map.get(id)
@@ -29,7 +37,8 @@ export function itemsFor(w:Workspace,assets:Asset[],runs:Run[],demo:boolean) {
   for (const run of runs) for (const c of run.candidates) {
     const a=map.get(c.id)
     if (!a) continue
-    items.push({...a,name:a.name.replace(/\.png$/i,''),candidate:true,kept:c.kept,seen:c.seen,reviewStatus:c.reviewStatus,
+    const expired = candidateAgeMs(c,run,now) >= NEW_RESULT_MS
+    items.push({...a,name:a.name.replace(/\.png$/i,''),candidate:true,kept:c.kept,seen:Boolean(c.seen||expired),reviewStatus:c.reviewStatus,
       needsReview:c.checks.filter((x)=>x.status!=='pass'&&!x.override).length,hasArea:run.guideMode==='mask'})
   }
   return items

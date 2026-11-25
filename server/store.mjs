@@ -209,6 +209,24 @@ export function openStore(dataDir) {
     return { format: PROJECT_FORMAT, version: VERSION, workspace: get('workspace', null), runs: get('runs', []), assets, blobs };
   }
 
+  // Project replacement swaps the visible catalogue. The immutable blobs remain
+  // on disk, so an idempotency receipt only needs the matching metadata.
+  function runReceipt(run) {
+    const ids = new Set([
+      ...(run.inputs ?? []), run.parent, run.target, ...(run.rawIds ?? []),
+      ...(run.candidates ?? []).flatMap(candidate => [candidate.id, candidate.rawId]),
+      ...(run.style?.rules ?? []).flatMap(rule => rule.ex.map(example => example.id)),
+    ].filter(Boolean));
+    const assets = [...ids].map(id => statements.getAsset.get(id)).filter(Boolean);
+    return { run, assets };
+  }
+
+  function needsRunRecovery(run) {
+    return run.status !== 'done' || (run.candidates ?? []).some(candidate =>
+      candidate.reviewStatus === 'pending' ||
+      candidate.reviewError === 'Charcoal closed during review. Rerun the image checks.');
+  }
+
   async function importProject(bundle, { validate } = {}) {
     const blobs = validateBundle(bundle);
     const checked = new Set();
@@ -224,23 +242,67 @@ export function openStore(dataDir) {
         checked.add(asset.normalizedHash);
       }
     }
-    await validate?.({ workspace: bundle.workspace, runs: bundle.runs, assets: bundle.assets.map(publicAsset) });
+    const workspace = bundle.workspace?.pendingSubmission
+      ? {...bundle.workspace, pendingSubmission: {...bundle.workspace.pendingSubmission, recoveryOnly: true}}
+      : bundle.workspace;
+    await validate?.({ workspace, runs: bundle.runs, assets: bundle.assets.map(publicAsset) });
+    const receipts = new Map();
+    for (const run of get('runs', [])) {
+      const saved = get('run-receipt:' + run.id, null);
+      if (!saved?.run || (saved.run.status !== 'done' && run.status === 'done') ||
+          (needsRunRecovery(saved.run) && !needsRunRecovery(run))) {
+        receipts.set(run.id, runReceipt(run));
+      }
+    }
+    const assets = new Map(bundle.assets.map(asset => [asset.id, asset]));
+    const runs = new Map(bundle.runs.map(run => [run.id, run]));
+    // A snapshot may already have been marked interrupted on another board.
+    // Reconcile it (including image checks) before jobs.recovery marks it again.
+    const recoveryIds = bundle.runs.filter(needsRunRecovery).map(run => run.id);
+    for (const id of new Set([...recoveryIds, ...(workspace?.pendingSubmission?.ids ?? [])])) {
+      const receipt = receipts.get(id) ?? get('run-receipt:' + id, null);
+      // Even a missing run may have reached the source board's provider.
+      if (!receipt) receipts.set(id, true);
+      const importedRun = runs.get(id);
+      if (!receipt?.run || (importedRun && (!needsRunRecovery(importedRun) ||
+          (importedRun.status !== 'pending' && needsRunRecovery(receipt.run))))) continue;
+      const compatible = receipt.assets.every(asset => {
+        const imported = assets.get(asset.id);
+        return !imported || (imported.originalHash === asset.originalHash &&
+          imported.normalizedHash === asset.normalizedHash);
+      });
+      if (!compatible) continue;
+      for (const asset of receipt.assets) if (!assets.has(asset.id)) assets.set(asset.id, asset);
+      runs.set(id, receipt.run);
+    }
+    const restored = { workspace, runs: [...runs.values()], assets: [...assets.values()].map(publicAsset) };
+    await validate?.(restored);
     for (const [hash, bytes] of blobs) writeBlob(imageDir, hash, bytes);
     syncDirectory(imageDir);
 
-    // Files are immutable. New records become visible only once every referenced blob is durable.
+    // Publish the replacement and reserve all earlier run IDs in one commit.
     db.exec('BEGIN IMMEDIATE');
     try {
+      for (const [id, receipt] of receipts) set('run-receipt:' + id, receipt);
       db.exec('DELETE FROM assets');
-      for (const asset of bundle.assets) insertAsset(asset);
-      set('workspace', bundle.workspace);
-      set('runs', bundle.runs);
+      for (const asset of assets.values()) insertAsset(asset);
+      set('workspace', workspace);
+      set('runs', restored.runs);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
     }
-    return { workspace: bundle.workspace, runs: bundle.runs, assets: bundle.assets.map(publicAsset) };
+    return restored;
+  }
+
+  // Older stores only marked the workspace. Keep those ambiguous IDs reserved
+  // even if a later save or a different project replaces that workspace.
+  const previousBatch = get('workspace', null)?.pendingSubmission;
+  if (previousBatch?.recoveryOnly) {
+    for (const id of previousBatch.ids) {
+      if (!get('run-receipt:' + id, null)) set('run-receipt:' + id, true);
+    }
   }
 
   return {

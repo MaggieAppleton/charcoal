@@ -20,9 +20,9 @@ Boards and images are stored locally in `.charcoal/studio`. The local service se
 
 ## Edit part of an image
 
-Choose **Edit area** and paint where the image can change. Charcoal checks that the pixels outside the mask match the source exactly. Use **Sketch** to guide the composition.
+Choose **Edit area** and paint over the subject you want to change, including nearby contours that need to move with it. Changes fade into the surrounding illustration. Charcoal checks that pixels beyond the blend match the source exactly. Use **Annotate** to guide wider revisions.
 
-![A painted mask covers a patch of water next to the boat, with the brush tools and protected pixel readout visible](docs/screenshots/edit-area.png)
+![The brush tools mark a patch of water next to the boat](docs/screenshots/edit-area.png)
 
 ## Save a style
 

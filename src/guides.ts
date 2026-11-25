@@ -13,12 +13,27 @@ export function drawGuide(ctx:CanvasRenderingContext2D, guide:Guide) {
   if (!pts.length) return
   ctx.save()
   ctx.globalCompositeOperation = erase ? 'destination-out' : 'source-over'
-  ctx.fillStyle = ctx.strokeStyle = layer === 'area' ? '#000' : '#0e8a8c'
+  ctx.fillStyle = ctx.strokeStyle = layer === 'area' ? '#000' : guide.tool ? '#c63832' : '#0e8a8c'
   ctx.lineCap = ctx.lineJoin = 'round'
   ctx.lineWidth = Math.max(1,size * width)
   const [x,y] = pts[0]
   ctx.beginPath()
-  if (pts.length === 1) {
+  if (!erase && guide.tool === 'text') {
+    drawNote(ctx,guide.text ?? '',x,y)
+  } else if (!erase && guide.tool === 'rectangle' && pts.length > 1) {
+    const [ex,ey] = pts.at(-1)!
+    ctx.strokeRect(x*width,y*height,(ex-x)*width,(ey-y)*height)
+  } else if (!erase && guide.tool === 'arrow' && pts.length > 1) {
+    const [ex,ey] = pts.at(-1)!
+    const angle = Math.atan2((ey-y)*height,(ex-x)*width)
+    const head = Math.max(ctx.lineWidth*3,width*.016)
+    ctx.moveTo(x*width,y*height)
+    ctx.lineTo(ex*width,ey*height)
+    ctx.moveTo(ex*width-head*Math.cos(angle-.5),ey*height-head*Math.sin(angle-.5))
+    ctx.lineTo(ex*width,ey*height)
+    ctx.lineTo(ex*width-head*Math.cos(angle+.5),ey*height-head*Math.sin(angle+.5))
+    ctx.stroke()
+  } else if (pts.length === 1) {
     ctx.arc(x*width,y*height,ctx.lineWidth/2,0,Math.PI*2)
     ctx.fill()
   } else {
@@ -28,6 +43,34 @@ export function drawGuide(ctx:CanvasRenderingContext2D, guide:Guide) {
     else ctx.stroke()
   }
   ctx.restore()
+}
+
+function drawNote(ctx:CanvasRenderingContext2D,text:string,x:number,y:number) {
+  if (!text.trim()) return
+  const {width,height}=ctx.canvas
+  const font=Math.max(9,width*.024)
+  const pad=font*.25
+  const lineHeight=font*1.25
+  const maxWidth=Math.min(width-pad*2,width*.42)
+  ctx.font=`500 ${font}px sans-serif`
+  ctx.textBaseline='top'
+  const lines:string[]=[]
+  for (const paragraph of text.split('\n')) {
+    let line=''
+    for (const character of paragraph) {
+      if (line && ctx.measureText(line+character).width>maxWidth) { lines.push(line);line='' }
+      line+=character
+    }
+    lines.push(line)
+  }
+  const boxWidth=Math.min(width,Math.max(...lines.map(line=>ctx.measureText(line).width))+pad*2)
+  const boxHeight=lines.length*lineHeight+pad*2
+  const left=Math.max(0,Math.min(x*width,width-boxWidth))
+  const top=Math.max(0,Math.min(y*height,height-boxHeight))
+  ctx.fillStyle='rgba(255,255,255,.94)'
+  ctx.fillRect(left,top,boxWidth,Math.min(height,boxHeight))
+  ctx.fillStyle='#c63832'
+  lines.forEach((line,index)=>ctx.fillText(line,left+pad,top+pad+index*lineHeight))
 }
 
 export function guideLayer(guides:Guide[],layer:GuideLayer,width:number,height:number) {

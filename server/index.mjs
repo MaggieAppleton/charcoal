@@ -6,17 +6,35 @@ import {DEFAULT_BOARD, openBoards} from './boards.mjs'
 import {importAsset, readAsset, MAX_ASSET_BYTES} from './assets.mjs'
 import {fixtureProviders, openAIProviders} from './providers.mjs'
 import {validateRuns, validGuides, validPoint, validRect, validSettings, validStyleVersion} from './jobs.mjs'
+import {fetchArticle, validArticleSource} from './article-ingestion.mjs'
+import {validMetaphorMetadata} from './metaphors.mjs'
 
 const host = '127.0.0.1'
 const port = Number(process.env.CHARCOAL_PORT ?? 4317)
 const demo = process.env.CHARCOAL_DEMO === '1'
-const provider = process.env.CHARCOAL_FIXTURE === '1' ? 'fixture' : process.env.OPENAI_API_KEY ? 'live' : 'unconfigured'
+const fixtureMode = process.env.CHARCOAL_FIXTURE === '1'
+const envApiKey = fixtureMode ? '' : process.env.OPENAI_API_KEY?.trim() || ''
 const root = fileURLToPath(new URL('../',import.meta.url))
 const samples = new URL('../public/samples/',import.meta.url)
-const engine = provider === 'fixture' ? fixtureProviders(samples)
-  : provider === 'live' ? openAIProviders(process.env.OPENAI_API_KEY,process.env.CHARCOAL_REVIEW_MODEL) : null
+let sessionApiKey = ''
+const runtime = {
+  get provider() {
+    return fixtureMode ? 'fixture' : (sessionApiKey || envApiKey) ? 'live' : 'unconfigured'
+  },
+  get sessionKey() {
+    return Boolean(sessionApiKey)
+  },
+  engine: fixtureMode ? fixtureProviders(samples)
+    : envApiKey ? openAIProviders(envApiKey,process.env.CHARCOAL_REVIEW_MODEL) : null,
+  setSessionKey(key) {
+    if (fixtureMode) throw bad('Fixture mode uses local sample responses.',409)
+    sessionApiKey = key
+    const activeKey = sessionApiKey || envApiKey
+    this.engine = activeKey ? openAIProviders(activeKey,process.env.CHARCOAL_REVIEW_MODEL) : null
+  },
+}
 const dataDir = resolve(process.env.CHARCOAL_DATA_DIR ?? (demo ? '.charcoal/demo' : '.charcoal/studio'))
-const boards = openBoards(dataDir,{demo,provider,engine})
+const boards = openBoards(dataDir,{demo,runtime})
 const defaultBoard = boards.get(DEFAULT_BOARD)
 
 const names = {layout:'Layout sketch',swatches:'Dusk swatches',walkers:'Two walkers',leaves:'Leaf shapes',grain:'Dry ink grain',
@@ -38,7 +56,9 @@ const scopedAsset = (asset,id) => {
 }
 const publicAssets = ({store,id}) => store.listAssets().map((asset)=>scopedAsset(asset,id))
 const state = (board) => ({
-  workspace:board.store.get('workspace',null),assets:publicAssets(board),runs:publicRuns(board),demo:board.demo,provider,
+  workspace:board.store.get('workspace',null),assets:publicAssets(board),runs:publicRuns(board),demo:board.demo,
+  provider:runtime.provider,sessionKey:runtime.sessionKey,
+  metaphorModel:runtime.engine?.metaphor??null,
 })
 const bad = (msg,status=400) => Object.assign(new Error(msg),{status})
 const mime = {html:'text/html; charset=utf-8',js:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',png:'image/png'}
@@ -85,9 +105,33 @@ function validStyleStore(store, hasAsset) {
 function checkWorkspace(w,hasAsset) {
   const imageIds = (list) => Array.isArray(list) && new Set(list).size === list.length && list.every(hasAsset)
   const optionalImage = (id) => id === null || hasAsset(id)
+  const isPrompt = (mark) => mark.kind === 'prompt' || (mark.kind === 'note' && mark.promptBlock === true)
   if (!record(w) || !imageIds(w.imageIds) || !imageIds(w.attachments) ||
       (w.deletedImageIds !== undefined && !imageIds(w.deletedImageIds)) ||
+      (w.deletedRunIds !== undefined && (!Array.isArray(w.deletedRunIds) ||
+        !w.deletedRunIds.every((id) => typeof id === 'string') || new Set(w.deletedRunIds).size !== w.deletedRunIds.length)) ||
       (w.referenceIds !== undefined && !imageIds(w.referenceIds)) ||
+      (w.pinnedIds !== undefined && !imageIds(w.pinnedIds)) ||
+      (w.metaphorDraft !== undefined && (!record(w.metaphorDraft) || typeof w.metaphorDraft.context !== 'string' ||
+        w.metaphorDraft.context.length > 100000 ||
+        (w.metaphorDraft.article !== undefined && !validArticleSource(w.metaphorDraft.article)) ||
+        (w.metaphorDraft.briefId !== undefined &&
+          (typeof w.metaphorDraft.briefId !== 'string' || !/^[a-z0-9_-]{1,80}$/i.test(w.metaphorDraft.briefId))))) ||
+      (w.pendingSubmission !== undefined && (!record(w.pendingSubmission) ||
+        typeof w.pendingSubmission.fingerprint !== 'string' ||
+        !Array.isArray(w.pendingSubmission.ids) || w.pendingSubmission.ids.length<1 || w.pendingSubmission.ids.length>4 ||
+        new Set(w.pendingSubmission.ids).size!==w.pendingSubmission.ids.length ||
+        !w.pendingSubmission.ids.every(id=>typeof id==='string' && /^[a-z0-9][a-z0-9_-]{0,43}$/i.test(id)) ||
+        (w.pendingSubmission.recoveryOnly !== undefined && typeof w.pendingSubmission.recoveryOnly !== 'boolean'))) ||
+      (w.studyMode !== undefined && !['illustration','composition','lighting','colour','texture'].includes(w.studyMode)) ||
+      (w.variationAxis !== undefined && !['composition','colour','style','lighting','freeform'].includes(w.variationAxis)) ||
+      (w.studyDirections !== undefined && (!Array.isArray(w.studyDirections) || w.studyDirections.length > 4 ||
+        !w.studyDirections.every(text => typeof text === 'string' && text.length <= 1200))) ||
+      (w.referenceDirections !== undefined && (!record(w.referenceDirections) ||
+        !Object.entries(w.referenceDirections).every(([id,direction]) => hasAsset(id) && record(direction) &&
+          Array.isArray(direction.roles) && direction.roles.length <= 6 &&
+          direction.roles.every(role => ['composition','colour','lighting','texture','style','subject'].includes(role)) &&
+          ['use','avoid'].every(key => typeof direction[key] === 'string' && direction[key].length <= 1200)))) ||
       new Set(w.target === null ? w.attachments : [w.target,...w.attachments]).size > 8 ||
       !optionalImage(w.active) || !optionalImage(w.target) ||
       !validPoint(w.camera) || !Number.isFinite(w.camera.zoom) || w.camera.zoom <= 0 ||
@@ -96,15 +140,38 @@ function checkWorkspace(w,hasAsset) {
       !Object.values(w.positions).every(validRect) || !validStyleStore(w.styleStore,hasAsset) ||
       !validSettings(w.settings) || typeof w.prompt !== 'string' || !Array.isArray(w.annotations) ||
       !w.annotations.every((mark) => record(mark) && typeof mark.id === 'string' &&
-        ['pen','arrow','rect','ellipse','note'].includes(mark.kind) && Array.isArray(mark.points) &&
+        ['pen','arrow','rect','ellipse','note','prompt'].includes(mark.kind) && Array.isArray(mark.points) &&
         mark.points.length > 0 && mark.points.every(validPoint) &&
-        (mark.text === undefined || typeof mark.text === 'string'))) {
+        (mark.text === undefined || typeof mark.text === 'string') &&
+        (mark.promptBlock === undefined || (mark.kind === 'note' && mark.promptBlock === true)) &&
+        (mark.metaphor === undefined || (mark.kind === 'note' && !mark.promptBlock && validMetaphorMetadata(mark.metaphor) &&
+          (mark.metaphor.article === undefined || validArticleSource(mark.metaphor.article)))) &&
+        (!isPrompt(mark) || (mark.points.length === 1 && Boolean(mark.text?.trim()))))) {
     throw bad('This workspace is missing required data or references an unavailable image.')
+  }
+  const promptIds = w.annotations.filter(isPrompt).map(mark => mark.id)
+  const prompts = new Set(promptIds)
+  if (prompts.size !== promptIds.length ||
+      (w.promptBlockIds !== undefined && (!Array.isArray(w.promptBlockIds) ||
+        new Set(w.promptBlockIds).size !== w.promptBlockIds.length ||
+        !w.promptBlockIds.every(id => prompts.has(id))))) {
+    throw bad('This workspace has invalid prompt blocks.')
   }
 }
 async function api(req,res,url) {
   const path = url.pathname
   const method = req.method
+  if (path === '/api/provider-key' && method === 'POST') {
+    const input = await body(req,4096)
+    const apiKey = typeof input?.apiKey === 'string' ? input.apiKey.trim() : ''
+    if (!apiKey) throw bad('Enter an OpenAI API key.')
+    runtime.setSessionKey(apiKey)
+    return json(res,{provider:runtime.provider,sessionKey:runtime.sessionKey})
+  }
+  if (path === '/api/provider-key' && method === 'DELETE') {
+    runtime.setSessionKey('')
+    return json(res,{provider:runtime.provider,sessionKey:runtime.sessionKey})
+  }
   if (path === '/api/boards' && method === 'GET') return json(res,boards.list())
   if (path === '/api/boards' && method === 'POST') {
     const input = await body(req)
@@ -155,6 +222,24 @@ async function api(req,res,url) {
     return respond(res,200,data.bytes,{'Content-Type':data.mime, 'Cache-Control':'no-cache',
       ...(asset[2] ? {'Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(data.name)}`} : {})})
   }
+  if (method === 'POST' && path === '/api/article') {
+    const input=await body(req,4096)
+    return json(res,await fetchArticle(input?.url))
+  }
+  if (method === 'POST' && path === '/api/metaphors') {
+    const draft=await body(req)
+    assertReady()
+    return json(res,await board.metaphors.explore(draft))
+  }
+  if (method === 'GET' && path === '/api/composition-plans') {
+    assertReady()
+    return json(res,{plan:board.plans.recover(url.searchParams.get('id'))})
+  }
+  if (method === 'POST' && path === '/api/composition-plans') {
+    const draft=await body(req)
+    assertReady()
+    return json(res,await board.plans.create(draft))
+  }
   if (method === 'POST' && path === '/api/runs') {
     const draft = await body(req,80*1024*1024)
     assertReady()
@@ -178,7 +263,7 @@ async function api(req,res,url) {
       'Content-Disposition':'attachment; filename="charcoal-project.json"'})
   }
   if (path === '/api/project' && method === 'POST') {
-    if (jobs.busy || board.uploads) throw bad('Wait for imports, generation and checks to finish before opening a project.',409)
+    if (jobs.busy || board.plans.busy || board.metaphors.busy || board.uploads) throw bad('Wait for imports, generation and checks to finish before opening a project.',409)
     board.opening = true
     try {
       const bundle = await body(req,230*1024*1024)
@@ -220,4 +305,4 @@ const server = createServer(async (req,res) => {
     if (!res.headersSent && !res.destroyed) json(res,{error:error.status ? error.message : 'Charcoal could not complete this operation.'},error.status ?? 500)
   }
 })
-server.listen(port, host, () => console.log(`Charcoal on http://${host}:${port} (${demo ? 'sample board, ' : ''}${provider})`))
+server.listen(port, host, () => console.log(`Charcoal on http://${host}:${port} (${demo ? 'sample board, ' : ''}${runtime.provider})`))

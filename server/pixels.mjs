@@ -1,5 +1,6 @@
 import {spawn} from 'node:child_process'
 import {decodeRgba, encodeRgba} from './assets.mjs'
+import {blendRegional, regionalWeights} from './regional-blend.mjs'
 
 export function isFocalArea(area) {
   return Array.isArray(area) && area.length === 4 &&
@@ -38,10 +39,10 @@ export function transformPng(bytes, args) {
   })
 }
 
-function pad(bytes, geometry, width, height, background) {
+function pad(bytes, geometry, width, height, background, filter = []) {
   const {w,h,x,y} = geometry
-  return transformPng(bytes, ['-resize', `${w}x${h}!`, '-background', background,
-    '-gravity', 'NorthWest', '-extent', `${width}x${height}-${x}-${y}`])
+  return transformPng(bytes, [...filter, '-resize', `${w}x${h}!`, '-background', background,
+    '-compose', 'Copy', '-gravity', 'NorthWest', '-extent', `${width}x${height}-${x}-${y}`])
 }
 
 function hasContent(pixels) {
@@ -57,19 +58,35 @@ export async function prepareRegional(target, region, mode, width, height) {
   }
   const empty = new Error(mode === 'mask' ? 'The edit area is empty. Paint a region or choose Whole image.'
     : 'The sketch is empty. Draw a guide or choose Whole image.')
-  if (!hasContent(guide.data)) throw empty
+  const weights = mode === 'mask' ? regionalWeights(guide) : null
+  if (mode === 'mask' ? !weights : !hasContent(guide.data)) throw empty
   const geometry = fitGeometry(source.width, source.height, width, height)
   const first = await pad(target, geometry, width, height, '#ecebe6')
-  const padded = await pad(region, geometry, width, height, 'none')
-  const image = await decodeRgba(padded)
-  if (!hasContent(image.data)) throw new Error('The guide is too small at the requested size. Use a larger brush or image size.')
-  if (mode === 'markup') return {first, guide:padded, geometry, source, width, height}
-  for (let i = 0; i < image.data.length; i += 4) {
-    const alpha = image.data[i + 3]
-    image.data.fill(255, i, i + 3)
-    image.data[i + 3] = alpha > 0 ? 0 : 255
+  const edit = {first, geometry, source, width, height}
+  const tooSmall = new Error('The guide is too small at the requested size. Use a larger brush or image size.')
+  if (mode === 'markup') {
+    const padded = await pad(region, geometry, width, height, 'none')
+    if (!hasContent((await decodeRgba(padded)).data)) throw tooSmall
+    return {...edit, guide:padded}
   }
-  return {first, guide:await encodeRgba(image.data,width,height), geometry, source, width, height, mask:guide.data}
+  // Resize an opaque stencil through the same frame as the source. Any gray
+  // from resampling counts as editable in the provider's binary alpha mask.
+  for (let i = 0; i < guide.data.length; i += 4) {
+    guide.data.fill(weights[i / 4] ? 0 : 255,i,i + 3)
+    guide.data[i + 3] = 255
+  }
+  const expanded = await encodeRgba(guide.data,source.width,source.height)
+  const image = await decodeRgba(await pad(expanded,geometry,width,height,'white',['-filter','Box']))
+  let editable = false
+  for (let i = 0; i < image.data.length; i += 4) {
+    const covered = image.data[i] < 255
+    image.data.fill(255, i, i + 3)
+    if (!covered) continue
+    image.data[i + 3] = 0
+    editable = true
+  }
+  if (!editable) throw tooSmall
+  return {...edit, guide:await encodeRgba(image.data,width,height), weights}
 }
 
 export async function unframe(raw, edit, protect) {
@@ -83,20 +100,17 @@ export async function unframe(raw, edit, protect) {
     '-resize', `${source.width}x${source.height}!`])
   if (!protect) return {bytes:mapped}
   const {data} = await decodeRgba(mapped)
-  const output = Buffer.from(source.data)
-  let changedArea = 0
-  for (let i = 0; i < output.length; i += 4) {
-    if (edit.mask[i + 3] === 0) continue
-    data.copy(output, i, i, i + 4)
-    changedArea++
-  }
-  if (!changedArea) throw new Error('The edit area is empty. Paint a region or choose Whole image.')
+  const output = blendRegional(source.data,data,edit.weights)
   const bytes = await encodeRgba(output,source.width,source.height)
   const verified = await decodeRgba(bytes)
-  for (let i = 0; i < output.length; i += 4) {
-    if (!edit.mask[i + 3] && verified.data.readUInt32LE(i) !== source.data.readUInt32LE(i)) {
-      throw new Error('Protected pixels could not be preserved. The raw response is saved in the run.')
+  let exactPixels = 0
+  for (let pixel = 0; pixel < edit.weights.length; pixel++) {
+    if (edit.weights[pixel]) continue
+    const i = pixel * 4
+    if (verified.data.readUInt32LE(i) !== source.data.readUInt32LE(i)) {
+      throw new Error('Pixels beyond the edit and its blend could not be preserved. The raw response is saved in the run.')
     }
+    exactPixels++
   }
-  return {bytes, exactPixels:source.width * source.height - changedArea}
+  return {bytes, exactPixels}
 }

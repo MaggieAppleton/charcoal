@@ -1,0 +1,40 @@
+.board-mark.metaphor-canvas-card { z-index: 2; transform-origin: top left; pointer-events: auto; }
+.metaphor-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 8px 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-control);
+  color: var(--ink);
+  font: 400 13px/19px var(--font);
+  text-align: left;
+  cursor: grab;
+  user-select: none;
+}
+.metaphor-card:hover { background: var(--hover); }
+.metaphor-card[aria-pressed=true] { box-shadow: inset 0 0 0 1px var(--ink), var(--shadow-control); }
+.metaphor-card[data-kind=brief] { justify-content: center; border-radius: 18px; background: var(--surface); }
+.metaphor-card-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.metaphor-card-heading strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.metaphor-card-heading svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.metaphor-excerpt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.metaphor-wire {
+  stroke: var(--muted);
+  opacity: .48;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.metaphor-wire[data-selected] { opacity: .9; }

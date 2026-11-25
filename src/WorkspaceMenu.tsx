@@ -2,24 +2,30 @@ import {Accordion} from '@base-ui/react/accordion'
 import {useEffect,useRef,useState,type FormEvent,type KeyboardEvent as ReactKeyboardEvent} from 'react'
 import {Icon} from './Icon.js'
 import type {BoardList} from './client'
+import type {Boot} from './model'
 import './workspace-menu.css'
 
 type Props = {
   catalogue:BoardList
   focusOnMount:boolean
+  provider:Boot['provider']
+  sessionKey:boolean
   onSelect:(id:string)=>Promise<void>
   onCreate:(name:string)=>Promise<void>
   onRename:(name:string)=>Promise<void>
   onSetArchived:(id:string,archived:boolean)=>Promise<void>
+  onSaveApiKey:(apiKey:string)=>Promise<void>
+  onClearApiKey:()=>Promise<void>
   onRuns:()=>void
   onOpenProject:()=>void
   onExport:()=>void
 }
 
-export function WorkspaceMenu({catalogue,focusOnMount,onSelect,onCreate,onRename,onSetArchived,onRuns,onOpenProject,onExport}:Props) {
+export function WorkspaceMenu({catalogue,focusOnMount,provider,sessionKey,onSelect,onCreate,onRename,onSetArchived,onSaveApiKey,onClearApiKey,onRuns,onOpenProject,onExport}:Props) {
   const [open,setOpen]=useState(false)
-  const [mode,setMode]=useState<'new'|'rename'|'archive'|null>(null)
+  const [mode,setMode]=useState<'new'|'rename'|'archive'|'apiKey'|null>(null)
   const [name,setName]=useState('')
+  const [apiKey,setApiKey]=useState('')
   const [error,setError]=useState('')
   const [pending,setPending]=useState(false)
   const used=useRef(false)
@@ -32,6 +38,7 @@ export function WorkspaceMenu({catalogue,focusOnMount,onSelect,onCreate,onRename
   function dismiss(restoreFocus=false) {
     setOpen(false)
     setMode(null)
+    setApiKey('')
     setError('')
     if (restoreFocus) trigger.current?.focus({preventScroll:true})
   }
@@ -108,6 +115,15 @@ export function WorkspaceMenu({catalogue,focusOnMount,onSelect,onCreate,onRename
 
   function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (mode==='apiKey') {
+      const value=apiKey.trim()
+      if (!value) return
+      void perform(async()=>{
+        await onSaveApiKey(value)
+        setApiKey('')
+      },false)
+      return
+    }
     const value=name.trim()
     if (!value) return
     void perform(()=>mode==='rename'?onRename(value):onCreate(value),mode==='new')
@@ -140,7 +156,21 @@ export function WorkspaceMenu({catalogue,focusOnMount,onSelect,onCreate,onRename
           <button type="button" ref={cancelArchive} className="btn" disabled={pending}
             onClick={()=>{setMode(null);setError('')}}>Cancel</button>
         </div>
-      </div>:mode?<form className="workspace-name-form" onSubmit={submit}>
+      </div>:mode==='apiKey'?<form className="workspace-name-form" onSubmit={submit}>
+        <label className="field-l" htmlFor="workspace-api-key">OpenAI API key</label>
+        <p className="workspace-key-status">
+          {sessionKey?'Saved for this session':provider==='live'?'Using environment key':'Saved for this session only'}
+        </p>
+        <input ref={input} id="workspace-api-key" type="password" autoComplete="off" spellCheck={false}
+          placeholder="sk-..." value={apiKey} onChange={(event)=>setApiKey(event.target.value)}/>
+        <div className="workspace-name-actions">
+          <button type="submit" className="btn primary" disabled={pending||!apiKey.trim()}>Save key</button>
+          {sessionKey&&<button type="button" className="btn" disabled={pending}
+            onClick={()=>void perform(async()=>{await onClearApiKey();setApiKey('')},false)}>Clear</button>}
+          <button type="button" className="btn" disabled={pending}
+            onClick={()=>{setMode(null);setApiKey('');setError('')}}>Cancel</button>
+        </div>
+      </form>:mode?<form className="workspace-name-form" onSubmit={submit}>
         <label className="field-l" htmlFor="workspace-board-name">Board name</label>
         <input ref={input} id="workspace-board-name" value={name} required maxLength={80} onChange={(event)=>setName(event.target.value)}/>
         <div className="workspace-name-actions">
@@ -174,6 +204,11 @@ export function WorkspaceMenu({catalogue,focusOnMount,onSelect,onCreate,onRename
       </>}
       {error&&<div className="workspace-menu-error" role="alert">{error}</div>}
       <div className="workspace-project-actions" role="group" aria-label="Project">
+        {provider!=='fixture'&&<button type="button" disabled={pending}
+          onClick={()=>{setApiKey('');setError('');setMode('apiKey')}}>
+          <Icon name="key"/><span className="workspace-board-name">OpenAI API key</span>
+          <span className="muted">{provider==='live'?'Active':'Not set'}</span>
+        </button>}
         <button type="button" onClick={()=>{dismiss(true);onRuns()}}><Icon name="doc"/>Runs</button>
         <button type="button" onClick={()=>{dismiss(true);onOpenProject()}}><Icon name="plus"/>Open project</button>
         <button type="button" onClick={()=>{dismiss(true);onExport()}}><Icon name="download"/>Export project</button>

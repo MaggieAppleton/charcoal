@@ -1,11 +1,13 @@
 .composer .tray {
-  --attachment-width: 64px;
-  --attachment-height: 46px;
+  --attachment-width: 96px;
+  --attachment-height: 68px;
   --attachment-column-gap: 14px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px var(--attachment-column-gap);
+  min-height: calc(var(--attachment-height) + 12px);
+  overflow-y: auto;
   padding: 8px 8px 4px;
 }
 
@@ -80,8 +82,8 @@
 
 @container frame (max-width: 360px) {
   .composer .tray {
-    --attachment-width: 56px;
-    --attachment-height: 42px;
+    --attachment-width: 80px;
+    --attachment-height: 58px;
     --attachment-column-gap: 10px;
   }
 }

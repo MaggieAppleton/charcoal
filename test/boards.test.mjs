@@ -67,3 +67,32 @@ test('opening a multi-board workspace preserves legacy data and keeps background
     await rm(path,{recursive:true,force:true})
   }
 })
+
+test('runtime provider updates apply to open boards without restarting',async()=>{
+  const path=await mkdtemp(join(tmpdir(),'charcoal-runtime-'))
+  const image=await readFile(new URL('../public/samples/s1.png',import.meta.url))
+  const settings={quality:'Low',complexity:'Low',size:'Wide',count:'1'}
+  const runtime={provider:'unconfigured',engine:null}
+  const boards=openBoards(path,{demo:false,runtime})
+  try {
+    const board=boards.get(DEFAULT_BOARD)
+    board.jobs.submit({id:'unconfigured-run',prompt:'Try before key',inputs:[],target:null,
+      guideMode:'whole',guide:[],settings,rect:{x:0,y:0,width:176,height:99}})
+    const firstDeadline=Date.now()+3000
+    while (board.jobs.busy&&Date.now()<firstDeadline) await pause(10)
+    assert.equal(board.jobs.get('unconfigured-run').status,'failed')
+
+    runtime.provider='live'
+    runtime.engine={generate:async()=>({images:[image]}),reviewer:{model:'gpt-5.4-mini',instruction:'test'}}
+    board.jobs.submit({id:'configured-run',prompt:'Try after key',inputs:[],target:null,
+      guideMode:'whole',guide:[],settings,rect:{x:0,y:0,width:176,height:99}})
+    const secondDeadline=Date.now()+3000
+    while (board.jobs.busy&&Date.now()<secondDeadline) await pause(10)
+    assert.equal(board.jobs.get('configured-run').status,'done')
+    assert.equal(board.jobs.get('configured-run').provider,'live')
+    assert.equal(board.jobs.get('configured-run').candidates.length,1)
+  } finally {
+    boards.close()
+    await rm(path,{recursive:true,force:true})
+  }
+})
