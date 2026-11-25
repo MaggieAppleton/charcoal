@@ -28,6 +28,8 @@ const paths = {
   arrowRight:'<path d="M3 12h18m-5-5 5 5-5 5"/>',
   square:'<rect x="4" y="4" width="16" height="16" rx="2"/>',
   hand:'<path d="M8 13V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v7-5a2 2 0 0 1 4 0v9c0 4-3 7-7 7h-1c-3 0-5-2-7-5l-2-3a2 2 0 0 1 3-2l2 2"/>',
+  link:'<path d="M10 13a4 4 0 0 0 6 .5l3.5-3.5a4 4 0 0 0-5.7-5.7l-2 2"/><path d="M14 11a4 4 0 0 0-6-.5L4.5 14a4 4 0 0 0 5.7 5.7l2-2"/>',
+  key:'<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
 }
 
 export function Icon({name}) {

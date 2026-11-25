@@ -19,9 +19,11 @@ export type BoardImage = {
 };
 export type BoardMark = {
   id: string;
-  kind: 'pen' | 'arrow' | 'rect' | 'ellipse' | 'note';
+  kind: 'pen' | 'arrow' | 'rect' | 'ellipse' | 'note' | 'prompt';
   points: Point[];
   text?: string;
+  promptBlock?: true;
+  metaphor?: import('./MetaphorCard').MetaphorData;
 };
 export const DEFAULT_CAMERA: Camera = { x: 0, y: 0, zoom: 1 };
 

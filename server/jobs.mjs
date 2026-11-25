@@ -1,6 +1,21 @@
 import {readAsset, importAsset} from './assets.mjs'
 import {isFocalArea, prepareRegional, unframe} from './pixels.mjs'
 import {promptParts, SIZES} from '../src/request.js'
+import {MAX_RUN_PROMPT_LENGTH} from '../src/composition-plan.js'
+
+// All boards share a runtime: only one image request may be in flight.
+const generationQueues = new WeakMap()
+async function generationSlot(runtime) {
+  const previous = generationQueues.get(runtime) ?? Promise.resolve()
+  let release
+  const current = new Promise(resolve => { release = resolve })
+  generationQueues.set(runtime,current)
+  await previous
+  return () => {
+    if (generationQueues.get(runtime) === current) generationQueues.delete(runtime)
+    release()
+  }
+}
 
 const levels = ['Low','Medium','High']
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,43}$/
@@ -33,6 +48,8 @@ export function validGuides(guide) {
   return Array.isArray(guide) && guide.length <= 3000 && guide.every((stroke) =>
     object(stroke) && ['area','sketch'].includes(stroke.layer) && Number.isFinite(stroke.size) &&
     stroke.size >= 0 && stroke.size <= 10_000 && [undefined,true,false].includes(stroke.erase) &&
+    (stroke.tool === undefined || ['pen','arrow','rectangle','text'].includes(stroke.tool)) &&
+    (stroke.text === undefined || (typeof stroke.text === 'string' && stroke.text.length <= 1200)) &&
     [undefined,true,false].includes(stroke.fill) && Array.isArray(stroke.pts) && stroke.pts.length > 0 &&
     stroke.pts.every((point) => Array.isArray(point) && point.length === 2 && point.every(bounded)))
 }
@@ -56,7 +73,7 @@ function normalizedRun(body, getAsset, frozenPrompt) {
   if (!object(body)) throw bad('This run request is missing required data.')
   const {id, inputs, target = null, parent, guideMode, guide, guidePng, settings, rect} = body
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
-  if (!runId(id) || !prompt || prompt.length > 24000) throw bad('Enter a prompt of up to 24,000 characters.')
+  if (!runId(id) || !prompt || prompt.length > MAX_RUN_PROMPT_LENGTH) throw bad('Enter a prompt of up to 24,000 characters.')
   if (!Array.isArray(inputs) || inputs.length > 8 || new Set(inputs).size !== inputs.length) {
     throw bad('Choose at most eight distinct inputs.')
   }
@@ -88,6 +105,7 @@ function normalizedRun(body, getAsset, frozenPrompt) {
 function validCandidate(candidate, hasAsset) {
   return object(candidate) && hasAsset(candidate.id) && hasAsset(candidate.rawId) &&
     ['pending','done','failed'].includes(candidate.reviewStatus) &&
+    (candidate.createdAt === undefined || (typeof candidate.createdAt === 'string' && Number.isFinite(Date.parse(candidate.createdAt)))) &&
     Array.isArray(candidate.checks) && candidate.checks.every((check) =>
       object(check) && typeof check.id === 'string' && typeof check.title === 'string' &&
       typeof check.obs === 'string' && judgments.includes(check.status) &&
@@ -145,7 +163,10 @@ function restoredRuns(runs) {
   return changed
 }
 
-export function createJobs(store, provider, engine) {
+export function createJobs(store, providerOrRuntime, legacyEngine) {
+  const runtime = typeof providerOrRuntime === 'object' && providerOrRuntime !== null
+    ? providerOrRuntime
+    : {provider:providerOrRuntime,engine:legacyEngine}
   const busy = new Set()
   const list = () => store.get('runs',[])
   const get = (id) => list().find((run) => run.id === id)
@@ -185,6 +206,7 @@ export function createJobs(store, provider, engine) {
         const art = bytes(candidateId)
         for (const rule of rules) {
           try {
+            const {provider,engine} = runtime
             if (!engine || run.provider !== provider) {
               throw new Error('Reopen this workspace with its original review provider before rerunning image checks.')
             }
@@ -222,11 +244,13 @@ export function createJobs(store, provider, engine) {
 
   async function execute(initial) {
     const {id,guideMode,guidePng,settings,label} = initial
+    const {provider,engine} = runtime
     let run = initial
     busy.add(id)
     let generated = false
+    const release = await generationSlot(runtime)
     try {
-      if (!engine) throw new Error('Set OPENAI_API_KEY in the local service and restart Charcoal, or launch the fixture workspace.')
+      if (!engine) throw new Error('Add an OpenAI API key in the Workspace menu, or set OPENAI_API_KEY and restart Charcoal.')
       const inputs = run.inputs.map(bytes)
       const [width,height] = SIZES[settings.size].split('x').map(Number)
       const regional = guideMode === 'whole' ? null
@@ -254,12 +278,12 @@ export function createJobs(store, provider, engine) {
           save(run)
           const output = regional ? await unframe(raw,regional,guideMode === 'mask') : {bytes:raw}
           await importAsset(store,{name,bytes:output.bytes},{id:candidateId,normalized:regional !== null})
-          const checks = output.exactPixels === undefined ? [] : [{
-            id:'pixel',title:'Outside the edit area',status:'pass',loc:'area',
-            obs:`All ${output.exactPixels.toLocaleString('en-US')} protected pixels match the normalized source exactly.`,
-          }]
+          const checks = output.exactPixels ? [{
+            id:'pixel',title:'Beyond the blend',status:'pass',
+            obs:`All ${output.exactPixels.toLocaleString('en-US')} pixels beyond the painted area and its blend match the source exactly.`,
+          }] : []
           run = get(id)
-          run.candidates.push({id:candidateId,rawId,checks,reviewStatus:'pending'})
+          run.candidates.push({id:candidateId,rawId,checks,reviewStatus:'pending',createdAt:new Date().toISOString()})
           save(run)
         } catch (error) {
           failures.push(`Variation ${i+1}: ${error.message}`)
@@ -275,7 +299,7 @@ export function createJobs(store, provider, engine) {
       run.retryNeedsConfirmation = provider === 'live' && (generated || Boolean(error.uncertain))
       run.error = run.rawIds.length ? `${error.message} Saved raw responses are available in the run record.` : error.message
     } finally {
-      try { save(run) } finally { busy.delete(id) }
+      try { save(run) } finally { busy.delete(id); release() }
     }
     for (const candidate of run.candidates) {
       if (candidate.reviewStatus === 'pending') await review(id,candidate.id)
@@ -284,6 +308,10 @@ export function createJobs(store, provider, engine) {
 
   function submit(body,original) {
     if (typeof body?.id === 'string' && get(body.id)) return get(body.id)
+    if (runId(body?.id) && store.get('run-receipt:'+body.id,null)) {
+      throw bad('This run ID belongs to an earlier project snapshot. Start a new batch.',409)
+    }
+    const {provider,engine} = runtime
     const newRun = normalizedRun(body,store.getAsset,original?.effectivePrompt)
     const run = {...newRun,status:'pending',provider,reviewer:engine?.reviewer,candidates:[],rawIds:[],
       dispatched:false,retriedFrom:original?.id,createdAt:new Date().toISOString()}
@@ -296,6 +324,7 @@ export function createJobs(store, provider, engine) {
     list, get, recovery, submit,
     get busy() { return busy.size > 0 },
     retry(id,retryId,confirmed) {
+      const {provider} = runtime
       const run = get(id)
       if (!run || !['failed','uncertain'].includes(run.status)) throw bad('This request cannot be retried.',409)
       const existing = list().find((attempt) => attempt.retriedFrom === id)
@@ -305,6 +334,7 @@ export function createJobs(store, provider, engine) {
       return submit({...run,id:retryId},run)
     },
     updateCandidate(runId,id,action) {
+      const {provider,engine} = runtime
       const run = get(runId)
       const candidate = run?.candidates.find((entry) => entry.id === id)
       if (!candidate) throw bad('Candidate not found.',404)

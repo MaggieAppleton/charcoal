@@ -1,0 +1,9 @@
+.study-controls { min-width: 0; }
+.study-mode { align-items: flex-start; gap: 8px; }
+.study-mode > .lbl { padding-top: 4px; }
+.some-settings .study-mode .seg { flex: 1; justify-content: flex-start; }
+.study-mode .seg button:disabled { opacity: .45; cursor: default; }
+.study-suggestion { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 4px; margin: 0 8px 8px; color: var(--muted); font: 400 13px/20px var(--font); }
+.study-hint { margin: 4px 8px 8px; color: var(--muted); font: 400 13px/20px var(--font); }
+
+.study-mode .seg { flex-wrap: wrap; }

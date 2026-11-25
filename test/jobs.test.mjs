@@ -74,8 +74,10 @@ test('fully erased mask stops before dispatch', async (t) => {
 
 test('unalignable variations retain raw files, later candidates, and require explicit live retry confirmation', async (t) => {
   const store = await setup(t)
-  const source = await encodeRgba(Buffer.alloc(24,255),3,2)
-  const mask = await encodeRgba(Buffer.from([0,0,0,255,...Array(20).fill(0)]),3,2)
+  const source = await encodeRgba(Buffer.alloc(12 * 8 * 4,255),12,8)
+  const paint = Buffer.alloc(12 * 8 * 4)
+  paint[3] = 255
+  const mask = await encodeRgba(paint,12,8)
   await importAsset(store,{name:'Reference',bytes:source},{id:'source',normalized:true})
   const prompts = []
   const jobs = createJobs(store,'live',{generate:async(request, __, regional)=>{
@@ -128,20 +130,24 @@ test('rerunning an imported review requires the configured model', async (t) => 
 })
 
 test('mask mapping preserves non-square source RGBA bytes including transparent pixels', async () => {
-  const width = 7
-  const height = 3
+  const width = 48
+  const height = 24
   const source = Buffer.from(Array.from({length:width*height*4},(_,i) => (i*17)%256))
   source[3] = 0
   const mask = Buffer.alloc(source.length)
-  mask[4*10+3] = 255
+  const mark = 12 * width + 24
+  mask[4*mark+3] = 255
   const edit = await prepareRegional(await encodeRgba(source,width,height),await encodeRgba(mask,width,height),'mask',96,96)
   const raw = await encodeRgba(Buffer.alloc(96*96*4,255),96,96)
   const result = await unframe(raw,edit,true)
   const {data} = await decodeRgba(result.bytes)
-  assert.equal(result.exactPixels,20)
+  assert.ok(result.exactPixels > width * height - 50)
+  assert.ok(result.exactPixels < width * height - 1)
+  assert.notDeepEqual(data.subarray(mark * 4,mark * 4 + 4),source.subarray(mark * 4,mark * 4 + 4))
   for (let i = 0; i < source.length; i += 4) {
-    if (mask[i+3]) assert.notDeepEqual(data.subarray(i,i+4),source.subarray(i,i+4))
-    else assert.deepEqual(data.subarray(i,i+4),source.subarray(i,i+4))
+    if (Math.abs((i / 4) % width - 24) > 3 || Math.abs(Math.floor(i / 4 / width) - 12) > 3) {
+      assert.deepEqual(data.subarray(i,i+4),source.subarray(i,i+4))
+    }
   }
 })
 
@@ -168,4 +174,155 @@ test('review sends the frozen instructions and crop without exposing failed cred
   const crop = Buffer.from(content.at(-1).image_url.split(',')[1],'base64')
   assert.deepEqual(normalizedSize(crop),{width:2,height:2})
   await assert.rejects(engine.check(rule,art,examples,reviewer),{message:'OpenAI (401): Check the API key and project access configured in the local service.'})
+})
+
+test('image requests queue across boards, retain unsent state, and continue after a transport failure', async (t) => {
+  const firstStore = await setup(t)
+  const secondStore = await setup(t)
+  const art = await encodeRgba(Buffer.alloc(16,255),2,2)
+  const calls = []
+  const gates = []
+  const runtime = {provider:'live',engine:{generate:async run => {
+    calls.push(run.id)
+    await new Promise(resolve => gates.push(resolve))
+    if (run.id === 'first') throw Object.assign(new Error('Connection closed'),{uncertain:true})
+    return {images:[art]}
+  }}}
+  const a = createJobs(firstStore,runtime)
+  const b = createJobs(secondStore,runtime)
+  a.submit(draft('first'))
+  a.submit(draft('second'))
+  b.submit(draft('third'))
+  await until(()=>calls.length===1)
+  assert.deepEqual(calls,['first'])
+  assert.equal(a.get('first').dispatched,true)
+  assert.equal(a.get('second').dispatched,false)
+  assert.equal(b.get('third').dispatched,false)
+  assert.equal(b.busy,true)
+  // Simulate recovery in a separate store, without disturbing the active queue.
+  const restored = await setup(t)
+  restored.set('runs',[a.get('first'),a.get('second')])
+  const recovered = createJobs(restored,'live',null)
+  assert.equal(recovered.get('first').status,'uncertain')
+  assert.equal(recovered.get('second').status,'failed')
+  assert.equal(recovered.get('second').retryNeedsConfirmation,false)
+  gates.shift()()
+  await until(()=>calls.length===2)
+  assert.deepEqual(calls,['first','second'])
+  assert.equal(a.get('first').retryNeedsConfirmation,true)
+  assert.equal(b.get('third').dispatched,false)
+  gates.shift()()
+  await until(()=>calls.length===3)
+  gates.shift()()
+  await until(()=>!a.busy&&!b.busy)
+  assert.equal(a.get('second').status,'done')
+  assert.equal(b.get('third').status,'done')
+  assert.deepEqual(calls,['first','second','third'],'uncertain requests are never automatically retried')
+})
+
+test('transport failures expose a diagnostic code without leaking request details', async (t) => {
+  const key = 'test-only-credential'
+  const engine = openAIProviders(key)
+  t.mock.method(globalThis,'fetch',async()=>{
+    throw new TypeError(`Failed with ${key}`,{cause:Object.assign(new Error(key),{code:'UND_ERR_SOCKET'})})
+  })
+  await assert.rejects(engine.generate(draft('transport'),[],null),error=>{
+    assert.equal(error.uncertain,true)
+    assert.match(error.message,/UND_ERR_SOCKET/)
+    assert.equal(error.message.includes(key),false)
+    return true
+  })
+})
+
+test('an in-flight export reopens with the durable result and never dispatches its IDs again',async t=>{
+  const store=await setup(t)
+  const blank=store.exportProject()
+  const art=await encodeRgba(Buffer.alloc(16,255),2,2)
+  let finish,calls=0
+  const engine={generate:async()=>{
+    calls++
+    return new Promise(resolve=>{finish=()=>resolve({images:[art]})})
+  }}
+  const jobs=createJobs(store,'fixture',engine)
+  const first=draft('in-flight')
+  const missing=draft('unknown')
+  store.set('workspace',{pendingSubmission:{ids:[first.id,missing.id],fingerprint:'fixture'}})
+  jobs.submit(first)
+  await until(()=>!!finish)
+  const partial=store.exportProject()
+  finish()
+  await until(()=>!jobs.busy)
+  const done=jobs.get(first.id)
+  assert.equal(done.status,'done')
+  await store.importProject(blank)
+  assert.equal(jobs.list().length,0)
+  assert.throws(()=>jobs.submit(first),{status:409})
+  await store.importProject(partial)
+  jobs.recovery()
+  assert.deepEqual(jobs.submit(first),done)
+  assert.deepEqual(store.readAsset(done.candidates[0].rawId,'original').bytes,art)
+  assert.throws(()=>jobs.submit(missing),{status:409})
+  await store.importProject(blank)
+  assert.throws(()=>jobs.submit(missing),{status:409})
+  assert.equal(calls,1)
+})
+
+test('an interrupted export round trip restores the source board completed receipt',async t=>{
+  const source=await setup(t)
+  const copy=await setup(t)
+  const blank=source.exportProject()
+  const art=await encodeRgba(Buffer.alloc(16,255),2,2)
+  let finish,calls=0
+  const jobs=createJobs(source,'fixture',{generate:async()=>{
+    calls++
+    return new Promise(resolve=>{finish=()=>resolve({images:[art]})})
+  }})
+  jobs.submit(draft('round-trip'))
+  await until(()=>!!finish)
+  const partial=source.exportProject()
+  finish()
+  await until(()=>!jobs.busy)
+  const completed=jobs.get('round-trip')
+  await copy.importProject(partial)
+  const copiedJobs=createJobs(copy,'fixture',null)
+  assert.equal(copiedJobs.get('round-trip').status,'failed')
+  // Remove the visible source run so only its durable receipt can restore it.
+  await source.importProject(blank)
+  await source.importProject(copy.exportProject())
+  jobs.recovery()
+  assert.deepEqual(jobs.get('round-trip'),completed)
+  assert.deepEqual(source.readAsset(completed.candidates[0].id,'original').bytes,art)
+  assert.equal(calls,1)
+})
+
+test('pending and interrupted image checks reconcile with the completed receipt',async t=>{
+  const source=await setup(t)
+  const copy=await setup(t)
+  const blank=source.exportProject()
+  const art=await encodeRgba(Buffer.alloc(16,255),2,2)
+  let finish,images=0,checks=0
+  const rule={id:'contrast',title:'Contrast',on:true,prompt:'',check:'A clear focal point.',ex:[]}
+  const jobs=createJobs(source,'fixture',{
+    generate:async()=>{images++;return {images:[art]}},
+    check:async()=>{checks++;return new Promise(resolve=>{finish=()=>resolve({status:'pass',obs:'Clear focus.'})})},
+  })
+  jobs.submit(draft('review-round-trip',{style:{name:'Fixture',version:1,rules:[rule]}}))
+  await until(()=>!!finish)
+  const partial=source.exportProject()
+  finish()
+  await until(()=>!jobs.busy)
+  const completed=jobs.get('review-round-trip')
+  assert.equal(completed.candidates[0].checks[0].status,'pass')
+  await source.importProject(partial)
+  jobs.recovery()
+  assert.deepEqual(jobs.get('review-round-trip'),completed)
+  await copy.importProject(partial)
+  const copiedJobs=createJobs(copy,'fixture',null)
+  assert.equal(copiedJobs.get('review-round-trip').candidates[0].reviewStatus,'failed')
+  await source.importProject(blank)
+  await source.importProject(copy.exportProject())
+  jobs.recovery()
+  assert.deepEqual(jobs.get('review-round-trip'),completed)
+  assert.equal(images,1)
+  assert.equal(checks,1)
 })

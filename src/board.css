@@ -3,6 +3,7 @@
   --note-action-limit: calc(var(--board-height) - var(--composer-h) - 16px - 34px - 8px);
   overflow: clip; padding: 0; touch-action: none; user-select: none;
 }
+.board-content { position: absolute; inset: 0; transform-origin: 0 0; }
 .board-canvas:focus-visible { outline-offset: -4px; }
 .board-canvas[data-tool=hand] { cursor: grab; }
 .board-canvas[data-tool=hand]:active { cursor: grabbing; }
@@ -20,7 +21,44 @@
 }
 .board-canvas .board-tile-hit:focus-visible { outline-offset: 7px; }
 .board-canvas .board-tile-hit img { width: 100%; height: 100%; aspect-ratio: auto; object-fit: cover; }
-.board-tile .n, .board-tile .mark, .board-tile .dot { pointer-events: none; }
+.board-tile span.n, .board-tile .mark, .board-tile .dot { pointer-events: none; }
+.board-tile .board-prompt-index { border: 0; z-index: 4; }
+.board-tile .board-prompt-index:hover { background: var(--muted); }
+.board-prompt-toggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-control);
+  opacity: 0;
+  transition: opacity .12s ease, background-color .12s ease, color .12s ease;
+}
+.board-prompt-toggle svg { width: 14px; height: 14px; }
+.board-prompt-toggle:not(.attached):hover { background: var(--hover); }
+.board-prompt-toggle.attached { background: var(--ink); color: var(--surface); }
+.board-tile:hover .board-prompt-toggle,
+.board-tile:has(:focus-visible) .board-prompt-toggle,
+.board-prompt-toggle:focus-visible { opacity: 1; }
+.board-group-ctx {
+  position: absolute;
+  transform: translate(-100%, -100%);
+  z-index: 8;
+  animation: group-pop .16s ease-out;
+}
+@keyframes group-pop { from { opacity: 0; transform: translate(-100%, calc(-100% + 3px)); } }
+@media (prefers-reduced-motion: reduce) {
+  .board-group-ctx { animation: none; }
+  .board-prompt-toggle { transition: none; }
+}
 .board-resize {
   position: absolute;
   right: -6px;
@@ -37,8 +75,13 @@
 .board-tile:hover .board-resize,
 .board-tile:focus-within .board-resize,
 .board-tile .board-resize:focus-visible { opacity: 1; }
+.board-job-tile { position: absolute; }
+.board-job-tile .board-job-delete { position: absolute; top: 4px; right: 4px; background: var(--surface); box-shadow: var(--shadow-control); }
 .board-job {
   position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   display: grid;
   align-content: center;
   justify-items: center;
@@ -59,7 +102,7 @@
 .board-job small { font-size: 12px; line-height: 16px; }
 .board-job-pending, .board-job-pending:hover { padding: 0; border: 0; background: #ededed; }
 .board-job-halftone { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.board-drawings { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; color: var(--ink); }
+.board-drawings { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; color: var(--ink); }
 .board-drawings g { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 .board-drawings circle { stroke: none; }
 .board-mark { position: absolute; border-radius: 3px; pointer-events: none; }
@@ -141,4 +184,15 @@
 }
 @media(pointer: coarse) {
   .board-resize { opacity: 1; width: 18px; height: 18px; }
+  .board-prompt-toggle { opacity: 1; }
+}
+
+.board-prompt-block { background: var(--surface); box-shadow: var(--shadow-control); }
+.board-prompt-block.flash { animation: flash .7s ease; }
+.board-prompt-block .board-note-text { padding-right: calc(36px + 8px * var(--mark-zoom)); }
+.board-prompt-block:hover .board-prompt-toggle,
+.board-prompt-block:has(:focus-visible) .board-prompt-toggle,
+.board-prompt-block .board-prompt-toggle.attached { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .board-prompt-block.flash { animation: none; }
 }

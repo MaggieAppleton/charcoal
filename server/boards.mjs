@@ -2,12 +2,15 @@ import {randomUUID} from 'node:crypto'
 import {join} from 'node:path'
 import {createJobs} from './jobs.mjs'
 import {openStore} from './store.mjs'
+import {createCompositionPlans} from './composition-plans.mjs'
+import {createMetaphors} from './metaphors.mjs'
 
 export const DEFAULT_BOARD = 'default'
 const registryKey = 'boards'
 const initialRegistry = () => ({activeId:DEFAULT_BOARD,boards:[{id:DEFAULT_BOARD,name:'Board 1'}]})
 
-export function openBoards(dataDir,{demo,provider,engine}) {
+export function openBoards(dataDir,{demo,provider,engine,runtime}) {
+  const providerRuntime = runtime ?? {provider,engine}
   // The original SQLite file and images directory remain the first board.
   const legacy = openStore(dataDir)
   const contexts = new Map()
@@ -32,7 +35,7 @@ export function openBoards(dataDir,{demo,provider,engine}) {
       find(read(),id)
       if (!contexts.has(id)) {
         const store = id === DEFAULT_BOARD ? legacy : openStore(join(dataDir,'boards',id))
-        contexts.set(id,{id,store,jobs:createJobs(store,provider,engine),
+        contexts.set(id,{id,store,jobs:createJobs(store,providerRuntime),plans:createCompositionPlans(store,providerRuntime),metaphors:createMetaphors(store,providerRuntime),
           demo:demo && id === DEFAULT_BOARD,opening:false,uploads:0})
       }
       return contexts.get(id)

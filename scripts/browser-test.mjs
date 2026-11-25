@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import {spawn} from 'node:child_process'
-import {mkdir,mkdtemp,readFile,rm} from 'node:fs/promises'
+import {mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {chromium} from 'playwright'
+import {checkPromptBlocks} from './prompt-blocks-check.mjs'
 import {decodeRgba} from '../server/assets.mjs'
 import {
   checkBoardArchive,checkImageRename,checkMarqueeLimit,checkNoteDraft,checkPlacementHistoryAndDrag,checkStyleLifecycle,
@@ -87,7 +88,7 @@ async function run(page,prompt,count,refreshDuring=false) {
 }
 const ctx = (page,id)=>page.locator(`.ctx[data-tile="${id}"]`)
 async function paint(page,layer='area') {
-  await page.getByRole('radio',{name:layer==='area'?'Edit area':'Sketch',exact:true}).click()
+  await page.getByRole('radio',{name:layer==='area'?'Edit area':'Annotate',exact:true}).click()
   const bounds=await page.locator('.paint-surface').boundingBox()
   await page.mouse.move(bounds.x+bounds.width*.63,bounds.y+bounds.height*.24)
   await page.mouse.down()
@@ -114,6 +115,7 @@ try {
   await page.goto(url)
   await tile(page,'s1').waitFor()
   const tools=page.getByRole('toolbar',{name:'Canvas tools',exact:true})
+  assert.equal(await tools.getByRole('button',{name:'Prompt text',exact:true}).count(),1)
   for (const label of ['Select','Pan','Pen','Eraser','Arrow','Rectangle','Ellipse']) {
     assert.equal(await tools.getByRole('button',{name:label,exact:true}).isVisible(),true)
   }
@@ -128,7 +130,21 @@ try {
 
   await checkMarqueeLimit(page,{savedWorkspace,attachmentIds,tile,detachAll})
 
-  for (const id of ['layout','walkers','leaves']) await tile(page,id).click()
+  const selectedLayout=tile(page,'layout')
+  await selectedLayout.click()
+  assert.equal(await selectedLayout.getAttribute('aria-pressed'),'true')
+  assert.deepEqual(await attachmentIds(page),[])
+  await selectedLayout.hover()
+  const addLayout=page.getByRole('button',{name:'Add Layout sketch to prompt',exact:true})
+  await addLayout.click()
+  assert.deepEqual(await attachmentIds(page),['layout'])
+  await page.getByRole('button',{name:'Remove prompt image 1',exact:true}).click()
+  assert.deepEqual(await attachmentIds(page),[])
+  assert.equal(await selectedLayout.getAttribute('aria-pressed'),'true')
+  for (const id of ['layout','walkers','leaves']) {
+    await tile(page,id).hover()
+    await page.locator(`.board-tile[data-id="${id}"] .board-prompt-toggle`).click()
+  }
   await page.locator('#prompt').fill('A researcher crosses a shallow stream with a notebook. Use the layout from 1, the walkers from 2 and the leaf shapes from 3.')
   await capture(page,'app-desktop-attached')
   await page.locator('#setBtn').click()
@@ -138,7 +154,7 @@ try {
   assert.equal(await page.locator('#setPop').count(),0)
   await page.getByRole('button',{name:'Full prompt',exact:true}).click()
   await capture(page,'app-desktop-prompt')
-  assert.match(await page.locator('#fullPrompt').innerText(),/Image 1 is Layout sketch/)
+  assert.match(await page.locator('#fullPrompt').innerText(),/Image 1 is attached/)
   await page.getByRole('button',{name:'Full prompt',exact:true}).click()
   await page.locator('#styleBtn').click()
   await page.getByRole('button',{name:'Quiet background',exact:true}).click()
@@ -168,7 +184,7 @@ try {
   await narrow.close()
 
   // Reorder by keyboard, then run with all references.
-  await page.getByRole('button',{name:'Find Layout sketch'}).focus()
+  await page.getByRole('button',{name:'Insert reference to Layout sketch'}).focus()
   await page.keyboard.press('Alt+ArrowRight')
   const order=await attachmentIds(page)
   assert.deepEqual(order,['walkers','layout','leaves'])
@@ -197,6 +213,7 @@ try {
   await page.getByRole('button',{name:'Hide overlay'}).click()
   await paint(page)
   await page.getByRole('button',{name:'Hide overlay'}).waitFor()
+  await page.getByText('Changes blend into the surrounding image.',{exact:false}).waitFor()
   await page.locator('#prompt').fill('Replace the fine branches with two broad leaf shapes.')
   await capture(page,'app-desktop-edit')
   await page.setViewportSize({width:390,height:720})
@@ -205,22 +222,36 @@ try {
   await page.getByRole('button',{name:'Done',exact:true}).click()
   const mask=await run(page,'Replace the fine branches with two broad leaf shapes.',1)
   assert.equal(mask.guideMode,'mask')
-  assert.equal(mask.candidates[0].checks.find((c)=>c.id==='pixel')?.status,'pass')
+  const pixelCheck=mask.candidates[0].checks.find((c)=>c.id==='pixel')
+  assert.equal(pixelCheck?.status,'pass')
+  assert.equal(pixelCheck.title,'Beyond the blend')
   const raw=await fetch(url+'/api/assets/'+mask.candidates[0].rawId+'/original')
   assert.equal(raw.ok,true)
-  const original=await decodeRgba(await readFile('public/samples/s1.png'))
-  const edited=await decodeRgba(Buffer.from(await (await fetch(url+'/api/assets/'+mask.candidates[0].id)).arrayBuffer()))
+  const rawBytes=Buffer.from(await raw.arrayBuffer())
+  const originalBytes=Buffer.from(await (await fetch(url+'/api/assets/s1')).arrayBuffer())
+  const editedBytes=Buffer.from(await (await fetch(url+'/api/assets/'+mask.candidates[0].id)).arrayBuffer())
+  const original=await decodeRgba(originalBytes)
+  const edited=await decodeRgba(editedBytes)
   const bundleRecord=await get('/project')
   const savedGuide=bundleRecord.runs.find((r)=>r.id===mask.id).guidePng
   const stencil=await decodeRgba(Buffer.from(savedGuide,'base64'))
   assert.deepEqual([edited.width,edited.height],[original.width,original.height])
-  let outside=0, changed=0
+  assert.deepEqual([stencil.width,stencil.height],[original.width,original.height])
+  let painted=0,nearby=0,unchanged=0
   for(let i=0;i<edited.data.length;i+=4) {
-    if(!stencil.data[i+3]){assert.equal(edited.data.readUInt32LE(i),original.data.readUInt32LE(i));outside++}
-    else if(edited.data.readUInt32LE(i)!==original.data.readUInt32LE(i)) changed++
+    if (edited.data.readUInt32LE(i)===original.data.readUInt32LE(i)) unchanged++
+    else if (stencil.data[i+3]) painted++
+    else nearby++
+    if (i / 4 % original.width < original.width / 4) {
+      assert.equal(edited.data.readUInt32LE(i),original.data.readUInt32LE(i),'distant left edge stays exact')
+    }
   }
-  assert.ok(changed>0)
-  console.log(`Protected mask verified pixel by pixel (${outside} unchanged outside; ${changed} changed inside)`)
+  assert.ok(painted>0&&nearby>0&&unchanged>0)
+  console.log(`Painted edit fixture: ${painted} painted and ${nearby} nearby pixels changed, ${unchanged} unchanged`)
+  if (output) {
+    for (const [name,bytes] of Object.entries({source:originalBytes,paint:Buffer.from(savedGuide,'base64'),
+      raw:rawBytes,result:editedBytes})) await writeFile(join(output,`app-edit-${name}.png`),bytes)
+  }
 
   const id=mask.candidates[0].id
   await placedView(page,id)
@@ -251,7 +282,8 @@ try {
   await page.getByRole('button',{name:'Revise',exact:true}).last().click()
   assert.equal((await savedWorkspace((w)=>w.target===id)).guides[id].length,mask.guide.length)
 
-  await page.getByRole('button',{name:/Open edit area on/}).click()
+  await tile(page,id).click()
+  await ctx(page,id).getByRole('button',{name:'Edit area',exact:true}).click()
   await paint(page,'sketch')
   await page.getByRole('button',{name:'Done',exact:true}).click()
   const markup=await run(page,'Follow the sketch line to bend the branch.',1)
@@ -270,12 +302,30 @@ try {
   const importedTile=tile(page,imported.imageIds.at(-1))
   await importedTile.waitFor()
   const before=(await get()).workspace.camera
+  const canvasBackground=await page.locator('.board-content').evaluate(node=>{
+    for (let y=300;y<500;y+=20) {
+      for (let x=240;x<1000;x+=20) {
+        if (document.elementFromPoint(x,y)===node) return {x,y}
+      }
+    }
+    throw new Error('No exposed canvas background for the pan gesture.')
+  })
+  await page.mouse.move(canvasBackground.x,canvasBackground.y)
+  await page.mouse.down({button:'middle'})
+  await page.mouse.move(canvasBackground.x+40,canvasBackground.y+24,{steps:5})
+  await page.mouse.up({button:'middle'})
+  const dragged=await savedWorkspace(w=>w.camera.x===before.x+40 && w.camera.y===before.y+24)
   await page.mouse.move(400,310)
   await page.mouse.wheel(37,54)
+  const panned=await savedWorkspace(w=>w.camera.x===dragged.camera.x-37 && w.camera.y===dragged.camera.y-54)
   await page.keyboard.down('Control')
   await page.mouse.wheel(0,-120)
   await page.keyboard.up('Control')
   const moved=await savedWorkspace((w)=>w.camera.zoom!==before.zoom)
+  const bounds=await page.locator('.board-canvas').boundingBox()
+  for(const [axis,anchor] of [['x',400-bounds.x],['y',310-bounds.y]]) {
+    assert.ok(Math.abs((anchor-panned.camera[axis])/panned.camera.zoom-(anchor-moved.camera[axis])/moved.camera.zoom)<.001)
+  }
   await page.reload()
   assert.deepEqual((await get()).workspace.camera,moved.camera)
   await page.getByRole('button',{name:/^Workspace, /}).click()
@@ -287,7 +337,7 @@ try {
   await page.locator('#prompt').fill('Keep this draft when I cancel')
   await openProject.setInputFiles(project)
   await replaceBoard.getByRole('button',{name:'Cancel',exact:true}).click()
-  assert.equal(await page.locator('#prompt').inputValue(),'Keep this draft when I cancel')
+  assert.equal(await page.locator('#prompt').innerText(),'Keep this draft when I cancel')
   assert.equal(await importedTile.count(),1)
   await openProject.setInputFiles(project)
   await replaceBoard.getByRole('button',{name:'Replace board',exact:true}).click()
@@ -322,6 +372,55 @@ try {
   await page.getByRole('button',{name:'Close run record'}).click()
   const oldCard=page.locator('.board-job').filter({hasText:'Interrupted example'})
   assert.equal(await oldCard.count(),0)
+  // Failed and interrupted placeholders can leave the canvas without losing their run records.
+  const failures=await (await page.request.get(url+'/api/project')).json()
+  const failedRuns=['failed','uncertain'].map((status,index)=>({...interruptedRun,
+    id:crypto.randomUUID(),label:`Removable ${status} run`,status,dispatched:false,
+    rect:{x:60,y:100+index*180,width:220,height:150},
+  }))
+  failures.runs.push(...failedRuns)
+  failures.workspace.camera={x:0,y:0,zoom:1}
+  await openProject.setInputFiles({name:'failures.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(failures))})
+  await replaceBoard.getByRole('button',{name:'Replace board',exact:true}).click()
+  const failureCanvas=page.getByRole('region',{name:'Canvas',exact:true})
+  for (const [index,failed] of failedRuns.entries()) {
+    await page.setViewportSize({width:index?390:1248,height:720})
+    const card=page.locator('.board-job').filter({hasText:failed.label})
+    await card.waitFor()
+    const remove=page.getByRole('button',{name:`Remove ${failed.label} from canvas`,exact:true})
+    assert.equal(await remove.count(),1,'Failed runs need a canvas removal control')
+    await capture(page,index?'failed-run-narrow':'failed-run-desktop')
+    await remove.click()
+    await card.waitFor({state:'detached'})
+    await savedWorkspace((w)=>w.deletedRunIds?.includes(failed.id))
+    await failureCanvas.press('Meta+z')
+    await card.waitFor()
+    await savedWorkspace((w)=>!w.deletedRunIds?.includes(failed.id))
+    await failureCanvas.press('Meta+Shift+z')
+    await card.waitFor({state:'detached'})
+    await savedWorkspace((w)=>w.deletedRunIds?.includes(failed.id))
+    await failureCanvas.press('Meta+z')
+    await card.waitFor()
+    await savedWorkspace((w)=>!w.deletedRunIds?.includes(failed.id))
+    await card.press('Backspace')
+    await card.waitFor({state:'detached'})
+    await savedWorkspace((w)=>w.deletedRunIds?.includes(failed.id))
+    await failureCanvas.press('Meta+z')
+    await card.waitFor()
+    await savedWorkspace((w)=>!w.deletedRunIds?.includes(failed.id))
+    await card.press('Delete')
+    await savedWorkspace((w)=>w.deletedRunIds?.includes(failed.id))
+    await page.reload()
+    assert.equal(await card.count(),0)
+    assert.ok((await get('/runs')).runs.some((r)=>r.id===failed.id))
+    await page.getByRole('button',{name:/^Workspace, /}).click()
+    await page.getByRole('button',{name:'Runs',exact:true}).click()
+    await page.getByRole('dialog',{name:'Runs',exact:true}).getByRole('button',{name:new RegExp(failed.label)}).click()
+    assert.equal(await page.getByRole('button',{name:'Retry generation',exact:true}).count(),1)
+    await page.getByRole('button',{name:'Close run record'}).click()
+  }
+  console.log('Failed run removal passed: trash, keyboard, undo/redo, reload, narrow canvas and retained retry history.')
+
   // Canvas deletion uses the same undo history as other board edits.
   await page.setViewportSize({width:390,height:720})
   const canvas=page.getByRole('region',{name:'Canvas',exact:true})
@@ -332,6 +431,8 @@ try {
   await layout.press('Delete')
   assert.equal(await layout.count(),1)
   await layout.click()
+  await page.getByRole('button',{name:'Add Layout sketch to prompt',exact:true}).click()
+  await layout.focus()
   const neighbor=await tile(page,'walkers').boundingBox()
   await page.keyboard.press('Delete')
   await layout.waitFor({state:'detached'})
@@ -342,7 +443,8 @@ try {
   assert.ok((await attachmentIds(page)).includes('layout'))
   await page.locator('#prompt').fill('ab')
   await page.locator('#prompt').press('Backspace')
-  assert.equal(await page.locator('#prompt').inputValue(),'a')
+  assert.equal(await page.locator('#prompt').innerText(),'a')
+  await layout.press('Enter')
   await layout.press('Backspace')
   await savedWorkspace((w)=>w.prompt==='a' && w.deletedImageIds?.includes('layout'))
   await page.reload()
@@ -399,8 +501,14 @@ try {
   const first=tile(page,'h2'), second=tile(page,'h3')
   await first.click()
   await second.click({modifiers:['Shift']})
+  assert.deepEqual(await attachmentIds(page),[references[1]])
+  assert.equal(await first.getAttribute('aria-pressed'),'true')
+  assert.equal(await second.getAttribute('aria-pressed'),'true')
+  const group=page.getByRole('toolbar',{name:'2 selected images',exact:true})
+  await group.getByRole('button',{name:'Add to prompt',exact:true}).click()
   const selectedGroup=await attachmentIds(page)
   assert.deepEqual(selectedGroup,[references[1],'h2','h3'])
+  await canvas.focus()
   await page.keyboard.press('Delete')
   await first.waitFor({state:'detached',timeout:3000})
   await second.waitFor({state:'detached',timeout:3000})
@@ -419,11 +527,12 @@ try {
   assert.deepEqual(await attachmentIds(page),selectedGroup)
 
   // The box selects just these tiles, even when a different tile is attached.
-  await tile(page,'walkers').click()
+  await tile(page,'walkers').hover()
+  await page.getByRole('button',{name:'Add Two walkers to prompt',exact:true}).click()
   const a=await first.boundingBox(), b=await second.boundingBox()
-  await page.mouse.move(a.x-4,a.y-5)
+  await page.mouse.move(b.x+b.width+4,b.y+b.height+5)
   await page.mouse.down()
-  await page.mouse.move(b.x+b.width+4,b.y+b.height+5,{steps:6})
+  await page.mouse.move(a.x-4,a.y-5,{steps:6})
   await page.mouse.up()
   await page.keyboard.press('Backspace')
   await first.waitFor({state:'detached',timeout:3000})
@@ -488,14 +597,23 @@ try {
   await page.keyboard.press('Escape')
   await catalogButton.click()
   await page.getByRole('button',{name:'Second illustration',exact:true}).click()
-  await page.waitForFunction(()=>document.querySelector('#prompt')?.value==='Second board draft')
+  await page.waitForFunction(()=>document.querySelector('#prompt')?.textContent==='Second board draft')
   await page.reload()
-  await page.waitForFunction(()=>document.querySelector('#prompt')?.value==='Second board draft')
+  await page.waitForFunction(()=>document.querySelector('#prompt')?.textContent==='Second board draft')
   assert.equal(await tile(page,references[0]).count(),0)
   await checkBoardArchive(page,{catalogButton,firstBoard,references,tile})
   console.log('Board switching passed: independent drafts, rules, canvas, and references through reload.')
 
   await checkStyleLifecycle(page)
+  await catalogButton.click()
+  await page.getByRole('button',{name:firstBoard.trim(),exact:true}).click()
+  await tile(page,'walkers').waitFor()
+  await detachAll(page)
+  await page.locator('#prompt').fill('')
+  await page.locator('#setBtn').click()
+  await page.getByRole('radio',{name:'1',exact:true}).click()
+  await page.keyboard.press('Escape')
+  await checkPromptBlocks(page,{savedWorkspace,run,tile})
   assert.deepEqual(issues,[])
   console.log('Browser fixture passed: batch import, pan/zoom persistence, style snapshots, text and reference runs, mask, markup, review, revision, exports and interrupted-run retry.')
 } finally {

@@ -1,19 +1,45 @@
 import {
-  type KeyboardEvent, type PointerEvent, useLayoutEffect, useRef, useState,
+  type KeyboardEvent, type PointerEvent, useEffect, useLayoutEffect, useRef, useState,
 } from 'react'
 import { Icon } from './Icon.js'
-import { SIZES, type Asset, type GuideMode, type PromptPart, type Settings } from './model'
+import { SIZES, type Asset, type GuideMode, type PromptBlock, type PromptPart, type Settings } from './model'
+import { PromptBlockChips } from './PromptBlockChips'
+import { PromptEditor, type PromptEditorHandle } from './PromptEditor'
+import {parseImageMentions} from './image-mentions.js'
+import { StudyControls } from './StudyControls'
+import type { StudyMode, VariationAxis } from './model'
 import { StyleEditor } from './StyleEditor'
 import { activeStyle, type StyleStore } from './styles'
+import {MetaphorComposer, type MetaphorComposerProps} from './MetaphorComposer'
 import './composer.css'
 import './attachments.css'
 
 type ComposerProps = {
+  metaphor?: MetaphorComposerProps
+  onMode: (metaphor: boolean) => void
+  studyMode: StudyMode
+  onStudyMode: (mode: StudyMode) => void
+  studyPreviews: {label: string; prompt: string}[]
+  sending: boolean
+  generating: boolean
+  sent: boolean
+  canSend: boolean
+  missingReferences: boolean
+  onStartFresh?: () => void
+  variation: VariationAxis
+  suggestedVariation: VariationAxis
+  isSuggested: boolean
+  pauseStyle: boolean
+  onVariation: (axis: VariationAxis|undefined) => void
   assets: Asset[]
   attachments: string[]
   target: string | null
   guideMode: GuideMode
   prompt: string
+  promptBlocks: PromptBlock[]
+  onLocatePromptBlock: (id: string) => void
+  onRemovePromptBlock: (id: string) => void
+  onReorderPromptBlocks: (ids: string[]) => void
   settings: Settings
   styleStore: StyleStore
   parts: PromptPart[]
@@ -21,11 +47,11 @@ type ComposerProps = {
   notice?: string
   highlighted?: string | null
   onPrompt: (value: string) => void
+  onClear: () => void
   onSettings: (value: Settings) => void
   onStyleStore: (value: StyleStore) => void
   onSend: () => void
   onRemove: (id: string) => void
-  onLocate: (id: string) => void
   onHighlight: (id: string | null) => void
   onReorder: (ids: string[]) => void
   onImportExamples: (files: File[]) => Promise<Asset[]>
@@ -37,45 +63,35 @@ const dims = {
   Square: SIZES.Square.replace('x', ' × '),
   Tall: SIZES.Tall.replace('x', ' × '),
 }
-type Panel = 'style' | 'settings'
+type Panel = 'style' | 'settings' | 'mode'
 
 export function Composer(props: ComposerProps) {
   const {
     attachments, target, guideMode, assets, highlighted, prompt, settings, styleStore, onGuideMode,
     parts, checks, notice, onPrompt, onSettings, onStyleStore, onSend, onRemove,
-    onLocate, onHighlight, onReorder, onImportExamples,
+    onHighlight, onReorder, onImportExamples,
   } = props
   const [panel, setPanel] = useState<Panel>()
   const [showPrompt, setShowPrompt] = useState(false)
   const composer = useRef<HTMLDivElement>(null)
-  const input = useRef<HTMLTextAreaElement>(null)
+  const input = useRef<PromptEditorHandle>(null)
+  const previousAttachments = useRef(new Set(attachments))
   const popup = useRef<HTMLDivElement>(null)
+  const modeTrigger = useRef<HTMLButtonElement>(null)
   const styleButton = useRef<HTMLButtonElement>(null)
   const settingsButton = useRef<HTMLButtonElement>(null)
   const style = activeStyle(styleStore)
-  const validPrompt = !!prompt.trim()
   const checkList = checks.length < 2 ? checks[0] : checks.slice(0, -1).join(', ') + ' and ' + checks.at(-1)
-  const trigger = panel === 'style' ? styleButton : settingsButton
+  const isMetaphor = !!props.metaphor
+  const trigger = panel === 'mode' ? modeTrigger : panel === 'style' ? styleButton : settingsButton
 
-  useLayoutEffect(() => {
-    const field = input.current
-    if (!field) return
-    const resize = () => {
-      field.style.height = 'auto'
-      field.style.height = Math.min(field.scrollHeight, 144) + 'px'
-    }
-    resize()
-    const watch = new ResizeObserver(entries => {
-      const width = entries[0]?.contentRect.width
-      if (width === lastWidth) return
-      lastWidth = width
-      resize()
-    })
-    let lastWidth = field.clientWidth
-    const card = composer.current
-    if (card) watch.observe(card)
-    return () => watch.disconnect()
-  }, [prompt])
+  useEffect(() => {
+    if (isMetaphor) return
+    const mentioned = new Set(parseImageMentions(prompt).flatMap(part => part.type==='image' ? [part.id] : []))
+    const added = attachments.filter(id => !previousAttachments.current.has(id) && !mentioned.has(id))
+    previousAttachments.current = new Set(attachments)
+    if (added.length) input.current?.insertImages(added)
+  }, [attachments, prompt, isMetaphor])
 
   useLayoutEffect(() => {
     const card = composer.current
@@ -137,63 +153,103 @@ export function Composer(props: ComposerProps) {
     setPanel(current => current === panelName ? undefined : panelName)
   }
 
+  const modeButton = <button ref={modeTrigger} type="button" className="btn lead composer-mode-trigger" data-metaphor={isMetaphor||undefined}
+    aria-label={`Composer mode, ${isMetaphor?'Metaphor':'Illustration'}`} aria-haspopup="dialog"
+    aria-expanded={panel==='mode'} aria-controls={panel==='mode'?'composerMode':undefined}
+    data-tip="Composer mode" onClick={()=>toggle('mode')}>
+    <span>{isMetaphor?'Metaphor':'Illustration'}</span><Icon name="chevDown"/>
+  </button>
+
+  function chooseMode(metaphor: boolean) {
+    props.onMode(metaphor)
+    setPanel(undefined)
+    requestAnimationFrame(()=>modeTrigger.current?.focus({preventScroll:true}))
+  }
+
   return <>
     <div className="composer" id="composer" ref={composer}>
+      {props.metaphor ? <MetaphorComposer {...props.metaphor} modeButton={modeButton}/> : <>
       {showPrompt && <div className="fullprompt" id="fullPrompt" aria-label="Full prompt" tabIndex={0}>
         <p>{parts.length ? parts.map((part, index) => <span key={index}>{index > 0 && ' '}
           <span className={part.kind} data-tip={part.title}>{part.text}</span>
         </span>) : <span className="muted">Your prompt</span>}</p>
-        <p className="after">Sunburst 2.6 at {settings.quality.toLowerCase()} quality and {settings.complexity.toLowerCase()} complexity, {dims[settings.size]}, {settings.count} {settings.count === '1' ? 'variation' : 'variations'}.
+        <p className="after">Sunburst 2.6 at {settings.quality.toLowerCase()} quality and {props.studyMode==='composition'?'high':settings.complexity.toLowerCase()} complexity, {dims[settings.size]}, {settings.count} {props.studyMode==='illustration'?(settings.count === '1' ? 'variation' : 'variations'):'separately directed studies'}.
           {checks.length > 0 && <><br />Each result is then checked for {checkList}.</>}
         </p>
+        {props.studyPreviews.slice(1).map((study, index) => <div className="study-prompt-preview" key={index}>
+          <b>{study.label}</b><p>{study.prompt}</p>
+        </div>)}
       </div>}
+      <PromptBlockChips blocks={props.promptBlocks} onLocate={props.onLocatePromptBlock}
+        onRemove={id => { props.onRemovePromptBlock(id); input.current?.focus() }}
+        onReorder={props.onReorderPromptBlocks} />
       <AttachmentTray assets={assets} attachments={attachments} target={target} guideMode={guideMode}
-        highlighted={highlighted} onHighlight={onHighlight} onLocate={onLocate} onReorder={onReorder}
+        onInsertReference={id => input.current?.insertImages([id])}
+        highlighted={highlighted} onHighlight={onHighlight} onReorder={onReorder}
         onRemove={id => { onRemove(id); input.current?.focus() }} />
       {notice && <p className="limit composer-status" role="status">{notice}</p>}
-      <textarea id="prompt" ref={input} rows={1} aria-label="Prompt" value={prompt}
+      {props.missingReferences && <p className="composer-status missing-reference" role="status">Reattach the missing image, or delete its reference from the prompt.</p>}
+      {props.onStartFresh && <div className="composer-status" role="status">
+        A new batch generates every image again and may incur additional charges.
+        <button type="button" className="btn" onClick={props.onStartFresh}>Start new batch</button>
+      </div>}
+      <PromptEditor ref={input} value={prompt} inputs={attachments.flatMap(id => assets.find(asset=>asset.id===id) ?? [])}
+        onChange={onPrompt} onSubmit={onSend} canSubmit={props.canSend}
         placeholder={target
           ? guideMode === 'mask' ? 'What should change in the painted area?' : 'What should change in this image?'
-          : attachments.length ? 'Describe how to use these images' : 'Describe an illustration'}
-        onChange={event => onPrompt(event.target.value)}
-        onKeyDown={event => {
-          if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
-          event.preventDefault()
-          if (validPrompt && !event.repeat) onSend()
-        }} />
+          : attachments.length ? 'Describe how to use these images' : 'Describe an illustration'} />
       <div className="bar">
+        {modeButton}
         <button ref={styleButton} type="button" className="btn lead" id="styleBtn" aria-haspopup="dialog"
           aria-expanded={panel === 'style'} aria-controls={panel === 'style' ? 'stylePop' : undefined}
           onClick={() => toggle('style')}>
-          <Icon name="palette" /><span id="styleName">{style?.name || 'No style'}</span><Icon name="chevDown" />
+          <Icon name="palette" /><span id="styleName">{props.pauseStyle ? 'Style paused' : style?.name || 'No style'}</span><Icon name="chevDown" />
         </button>
         <button ref={settingsButton} type="button" className="btn lead" id="setBtn" aria-haspopup="dialog"
           aria-expanded={panel === 'settings'} aria-controls={panel === 'settings' ? 'setPop' : undefined}
           onClick={() => toggle('settings')}>
-          <Icon name="sliders" />Sunburst 2.6 <span className="muted" id="setSummary">{settings.quality}</span>
+          <Icon name="sliders" />{props.studyMode === 'illustration' ? 'Sunburst 2.6' : props.studyMode === 'composition' ? 'Composition studies' : `${props.studyMode[0].toUpperCase()}${props.studyMode.slice(1)} studies`} <span className="muted" id="setSummary">{props.studyMode === 'composition' ? 'B&W' : settings.quality}</span>
         </button>
         <button type="button" className="btn icon" id="fpBtn" aria-expanded={showPrompt}
           aria-controls={showPrompt ? 'fullPrompt' : undefined} aria-label="Full prompt" data-tip="Full prompt"
           onClick={() => setShowPrompt(!showPrompt)}><Icon name="doc" /></button>
         <span className="spacer" />
-        <button type="button" className="btn icon primary" id="send" aria-label="Send to Sunburst"
-          data-tip="Send to Sunburst" disabled={!validPrompt} onClick={onSend}><Icon name="arrowUp" /></button>
+        {props.generating && <span className="composer-generation-indicator" role="status" aria-label="Generating images"/>}
+        {(prompt.length > 0 || attachments.length > 0 || props.promptBlocks.length > 0) && <button type="button" className="btn icon"
+          aria-label="Clear prompt" data-tip="Clear prompt" onClick={() => { props.onClear(); input.current?.focus() }}>
+          <Icon name="eraser" />
+        </button>}
+        <button type="button" className="btn icon primary" id="send" aria-label={props.sent?'Submitted':'Send to Sunburst'}
+          aria-busy={props.sending} data-sent={props.sent||undefined}
+          disabled={!props.canSend} onClick={onSend}><Icon name={props.sent?'check':'arrowUp'} /></button>
       </div>
+      </>}
     </div>
-    {panel === 'style' && <div ref={popup} className="pop style-pop" id="stylePop" role="dialog" aria-label="Style" style={{ width: 380 }}>
+    {panel === 'mode' && <div ref={popup} className="pop composer-mode-menu" id="composerMode" role="dialog" aria-label="Composer mode">
+      <button type="button" className="btn lead" aria-pressed={!isMetaphor} onClick={()=>chooseMode(false)}>
+        <Icon name="brush"/>Illustration
+      </button>
+      <button type="button" className="btn lead" aria-pressed={isMetaphor} onClick={()=>chooseMode(true)}>
+        <Icon name="doc"/>Metaphor
+      </button>
+    </div>}
+    {!isMetaphor && panel === 'style' && <div ref={popup} className="pop style-pop" id="stylePop" role="dialog" aria-label="Style" style={{ width: 380 }}>
       <StyleEditor store={styleStore} assets={assets} attachments={attachments} onChange={onStyleStore} onImportExamples={onImportExamples} />
     </div>}
-    {panel === 'settings' && <div ref={popup} className="pop some-settings" id="setPop" role="dialog" aria-label="Sunburst 2.6 settings" style={{ width: 316 }}>
+    {!isMetaphor && panel === 'settings' && <div ref={popup} className="pop some-settings" id="setPop" role="dialog" aria-label="Sunburst 2.6 settings" style={{ width: 316 }}>
+      <StudyControls mode={props.studyMode} onMode={props.onStudyMode}
+        count={Number(settings.count)} hasTarget={!!target} regionalEdit={!!target && guideMode==='mask'}
+        variation={props.variation} suggestedVariation={props.suggestedVariation} isSuggested={props.isSuggested} onVariation={props.onVariation} />
       <Setting label="Quality" options={['Low', 'Medium', 'High']} value={settings.quality}
         onChange={quality => onSettings({ ...settings, quality })} />
-      <Setting label="Complexity" options={['Low', 'Medium', 'High']} value={settings.complexity}
-        onChange={complexity => onSettings({ ...settings, complexity })} />
+      {props.studyMode!=='composition' && <Setting label="Complexity" options={['Low', 'Medium', 'High']} value={settings.complexity}
+        onChange={complexity => onSettings({ ...settings, complexity })} />}
       <Setting label="Size" options={['Wide', 'Square', 'Tall']} value={settings.size} hints={dims}
         onChange={size => onSettings({ ...settings, size })} />
       <Setting label="Variations" options={['1', '2', '3', '4']} value={settings.count}
         onChange={count => onSettings({ ...settings, count })} />
       {target && <Setting label="Edit mode" options={['whole', 'mask', 'markup']} value={guideMode}
-        labels={{ whole: 'Whole image', mask: 'Edit area', markup: 'Sketch' }} onChange={onGuideMode} />}
+        labels={{ whole: 'Whole image', mask: 'Edit area', markup: 'Annotations' }} onChange={onGuideMode} />}
     </div>}
   </>
 }
@@ -230,17 +286,18 @@ function Setting<Value extends string>({
 }
 
 type TrayProps = Pick<ComposerProps, 'assets' | 'attachments' | 'target' | 'guideMode' | 'highlighted'
-  | 'onHighlight' | 'onLocate' | 'onReorder' | 'onRemove'>
+  | 'onHighlight' | 'onReorder' | 'onRemove'> & {onInsertReference:(id:string)=>void}
 
 type Drag = { id: string; x: number; y: number; pointer: number; moved: boolean }
 type Insertion = { id: string; after: boolean }
 
 function AttachmentTray({
-  assets, attachments, target, guideMode, highlighted, onHighlight, onLocate, onReorder, onRemove,
+  assets, attachments, target, guideMode, highlighted, onHighlight, onReorder, onRemove,
+  onInsertReference,
 }: TrayProps) {
   const drag = useRef<Drag>(null)
   const insertion = useRef<Insertion>(null)
-  const skipLocate = useRef(false)
+  const skipInsert = useRef(false)
   const [dragging, setDragging] = useState<string>()
   const [marker, setMarker] = useState<Insertion>()
   const [announcement, setAnnouncement] = useState('')
@@ -281,8 +338,8 @@ function AttachmentTray({
     if (!interaction || event.pointerId !== interaction.pointer) return
     const next = insertion.current
     if (drop && interaction.moved) {
-      skipLocate.current = true
-      setTimeout(() => { skipLocate.current = false }, 0)
+      skipInsert.current = true
+      setTimeout(() => { skipInsert.current = false }, 0)
       if (next) {
         const rest = attachments.filter(id => id !== interaction.id)
         move(interaction.id, rest.indexOf(next.id) + Number(next.after))
@@ -310,9 +367,9 @@ function AttachmentTray({
           if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(null)
         }}>
         <button type="button" className="thumb" data-tip={tip}
-          aria-label={`${isTarget ? 'Open edit area on' : 'Find'} ${asset.name}`} aria-description={tip}
+          aria-label={`Insert reference to ${asset.name}`} aria-description={tip}
           aria-keyshortcuts={isTarget ? undefined : 'Alt+ArrowLeft Alt+ArrowRight'}
-          onClick={() => { if (!skipLocate.current) onLocate(id) }}
+          onClick={() => { if (!skipInsert.current) onInsertReference(id) }}
           onPointerDown={event => {
             if (!isTarget && event.button === 0 && event.isPrimary) {
               drag.current = { id, x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false }

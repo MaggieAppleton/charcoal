@@ -1,6 +1,6 @@
+import { Icon } from './Icon.js';
 import { useEffect, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Icon } from './Icon.js';
 import { BoardIcon } from './board-icons.js';
 import type { BoardIconName } from './board-icons.js';
 import type { BoardTool } from './board-gestures.js';
@@ -14,6 +14,7 @@ export const TOOLS: Array<{ id: BoardTool; label: string; key: string; icon: Boa
   { id: 'rect', label: 'Rectangle', key: 'R', icon: 'square' },
   { id: 'ellipse', label: 'Ellipse', key: 'O', icon: 'circle' },
   { id: 'note', label: 'Note', key: 'N', icon: 'noteBlank' },
+  { id: 'prompt', label: 'Prompt text', key: 'T', icon: 'text' },
 ];
 
 type Props = {
@@ -76,9 +77,9 @@ export function BoardToolbar(props: Props) {
 
   return <div className="board-controls" onKeyDown={keyboard}>
     <div className="board-rail" ref={rail} role="toolbar" aria-label="Canvas tools" aria-orientation="vertical">
-      {TOOLS.slice(0, -1).map(button)}
+      {TOOLS.slice(0, -2).map(button)}
       <span className="board-rail-sep" aria-hidden="true" />
-      {button(TOOLS.at(-1)!)}
+      {TOOLS.slice(-2).map(button)}
       <button type="button" ref={more} className="btn icon" aria-label="More canvas actions"
         aria-expanded={menu} data-tip={zoom !== 1 ? `More (${Math.round(zoom * 100)}%)` : 'More'} data-tip-side="right"
         tabIndex={-1} onClick={event => { menuByKey.current = event.detail === 0; onMenu(!menu); }}>

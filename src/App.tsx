@@ -1,3 +1,4 @@
+import type {BoardPatch} from './board-gestures'
 import {useEffect,useMemo,useRef,useState,useSyncExternalStore} from 'react'
 import {Board,type BoardHandle} from './Board'
 import {Composer} from './Composer'
@@ -11,23 +12,39 @@ import {RunDialog} from './RunDialog'
 import {Tooltip} from './Tooltip'
 import {WorkspaceMenu} from './WorkspaceMenu'
 import type {BoardSession} from './board-session'
-import type {BoardList} from './client'
+import {clipboardImages} from './clipboard'
+import {providerCredentials,type BoardList} from './client'
 import {guideLayer,guidePercent} from './guides'
 import {promptParts,SIZES} from './request.js'
+import {linkedPromptBlocks} from './prompt-blocks'
+import {studyDraft} from './study-draft'
+import {hasPromptText,keepAttachedMentions,missingImageMentions} from './inline-reference-draft.js'
+import {imageMention,resolveImageMentions} from './image-mentions.js'
+import {BATCH_PLAN_CONTRACT_VERSION,MAX_BATCH_BRIEF_LENGTH,MAX_RUN_PROMPT_LENGTH,renderComposition} from './composition-plan.js'
+import {briefExplored,metaphorActions} from './metaphor-actions'
+import {suggestVariation,studyAxis,styleRulesForStudy} from './studies.js'
+import {PinnedImages} from './PinnedImages'
+import {markRect} from './board-marks'
 import {activeStyle,effectiveRules,saveStyleVersion} from './styles'
-import {candidatePositions,importPositions,itemsFor} from './workspace'
-import type {Asset,GuideMode,Run,Workspace} from './model'
+import {candidateAgeMs,candidatePositions,importPositions,itemsFor,NEW_RESULT_MS} from './workspace'
+import type {Asset,GuideMode,Run,Workspace,StudyMode} from './model'
 import type {Point} from './board-geometry'
 
-type Layer = {id:string; mode:'edit'|'review'; origin?:DOMRect}
+type Layer = {id:string; mode:'edit'|'review'; origin?:DOMRect; initialLayer?:'area'|'sketch'}
 const message = (error:unknown)=>error instanceof Error?error.message:String(error)
+
+function draftKey(w:Workspace,contractVersion:number|null=BATCH_PLAN_CONTRACT_VERSION) {
+  return JSON.stringify({...(contractVersion===null?{}:{contractVersion}),prompt:w.prompt,blocks:linkedPromptBlocks(w.promptBlockIds,w.annotations),
+    settings:w.settings,mode:w.studyMode,variation:w.variationAxis,
+    target:w.target,attachments:w.attachments,references:w.referenceDirections,guideMode:w.guideMode,
+    guide:w.target?w.guides[w.target]:[],rules:effectiveRules(w.styleStore)})
+}
 
 function withoutAttachments(workspace:Workspace,ids:ReadonlySet<string>):Workspace {
   return {
     ...workspace,
     attachments:workspace.attachments.filter((id)=>!ids.has(id)),
     ...(workspace.target!==null&&ids.has(workspace.target)?{target:null,guideMode:'whole'}:{}),
-    ...(workspace.active!==null&&ids.has(workspace.active)?{active:null}:{}),
   }
 }
 
@@ -42,8 +59,13 @@ type Props = {
 }
 
 export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreate,onBoardRename,onBoardSetArchived}:Props) {
-  const {boot,workspace:w,projectVersion,saveError} = useSyncExternalStore(session.subscribe,session.snapshot)
+  const {boot,workspace:w,projectVersion,saveError,submissions,metaphorStatus} = useSyncExternalStore(session.subscribe,session.snapshot)
   const {client,setBoot,setWorkspace,refresh} = session
+  const [metaphorMode,setMetaphorMode] = useState(false)
+  const [metaphorSelection,setMetaphorSelection] = useState<string|null>(null)
+  const [articleInput,setArticleInput] = useState<string|null>(null)
+  const [articleStatus,setArticleStatus] = useState<{busy?:boolean;error?:string}>({})
+  const articleLock = useRef(false)
   const [layer,setLayer] = useState<Layer|null>(null)
   const [details,setDetails] = useState<string|null>(null)
   const [projectToOpen,setProjectToOpen] = useState<File|null>(null)
@@ -51,33 +73,114 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
   const [highlight,setHighlight] = useState<string|null>(null)
   const [notice,setNotice] = useState('')
   const [error,setError] = useState('')
+  const [unavailableBatch,setUnavailableBatch] = useState<string>()
   const [dragging,setDragging] = useState(false)
   const [showReferences,setShowReferences] = useState(false)
+  const [showPins,setShowPins] = useState(false)
+  const [sending,setSending] = useState(false)
+  const [sent,setSent] = useState(false)
+  const pinsButton = useRef<HTMLButtonElement>(null)
+  const [now,setNow] = useState(()=>Date.now())
   const referencesButton = useRef<HTMLButtonElement>(null)
   const board = useRef<BoardHandle>(null)
+  const metaphors=metaphorActions(session,()=>board.current?.placement())
+  const selectedMark=w.annotations.find(mark=>mark.id===metaphorSelection)??(metaphorSelection
+    ? w.annotations.find(mark=>mark.metaphor?.dismissedOptions&&Object.hasOwn(mark.metaphor.dismissedOptions,metaphorSelection))
+    : undefined)
+  const selectedMetaphor=selectedMark?.metaphor
+  const selectedMetaphorId=selectedMark?.id
+  const draft=w.metaphorDraft??{context:''}
+  const metaphorSource=w.annotations.find(mark=>mark.id===selectedMetaphor?.briefId&&mark.metaphor?.kind==='brief')
+  const context=selectedMetaphor?.context??draft.context
+  const draftBrief=w.annotations.find(mark=>mark.id===draft.briefId&&mark.metaphor?.kind==='brief'&&mark.metaphor.context===context)
+  const shownId=selectedMetaphor ? selectedMetaphorId : draftBrief?.id
+  const shownStatus=shownId ? metaphorStatus[shownId] : undefined
+  const shownMetaphor=selectedMetaphor??draftBrief?.metaphor
+  const matchingOptions=shownId?w.annotations.filter(mark=>mark.metaphor?.kind==='option'&&mark.metaphor.briefId===shownId):[]
+  const canAppend=shownMetaphor?.kind==='brief'&&briefExplored(shownMetaphor,matchingOptions.length)
   const frame = useRef<HTMLElement>(null)
   const files = useRef<HTMLInputElement>(null)
   const projectFile = useRef<HTMLInputElement>(null)
   const sendLock = useRef(false)
   const {assets,runs} = boot
+  const fingerprint=draftKey(w)
+  const pending=w.pendingSubmission
+  const matchingBatch=pending && (pending.fingerprint===fingerprint ||
+    [3,2,1,null].some(version=>pending.fingerprint===draftKey(w,version))) ? pending : undefined
+  const recoveryUnavailable=!!matchingBatch && matchingBatch.ids[0]===unavailableBatch
+  const batchPending = matchingBatch?.ids.some(id=>runs.some(run=>run.id===id&&run.status==='pending') ||
+    submissions.some(job=>job.id===id&&job.status==='pending')) ?? false
+  const submitted = batchPending && matchingBatch?.ids.every(id=>runs.some(run=>run.id===id)||submissions.some(job=>job.id===id&&job.status==='pending'))
   const deletedIds = new Set(w.deletedImageIds)
 
-  const patch = (update:Partial<Workspace>)=>setWorkspace((prev)=>({...prev,...update}))
+  const patch = (update:Partial<Workspace> & Pick<BoardPatch,'markPoints'|'markChanges'>)=>setWorkspace((prev)=>{
+    const {markPoints,markChanges,...workspaceUpdate}=update
+    const next={...prev,...workspaceUpdate}
+    if(markPoints) next.annotations=prev.annotations.map(mark=>markPoints[mark.id]?{...mark,points:markPoints[mark.id]}:mark)
+    if(markChanges) {
+      const remaining=new Map(markChanges)
+      next.annotations=next.annotations.flatMap(mark=>{
+        if(!remaining.has(mark.id))return [mark]
+        const changed=remaining.get(mark.id)
+        remaining.delete(mark.id)
+        return changed?[changed.mark]:[]
+      })
+      const additions=[...remaining.values()].filter(change=>change!==null).sort((a,b)=>a.index-b.index)
+      for(const {mark,index} of additions)next.annotations.splice(index,0,mark)
+    }
+    if ((update.annotations||markChanges) && next.promptBlockIds?.length) {
+      next.promptBlockIds=linkedPromptBlocks(next.promptBlockIds,next.annotations).map(block=>block.id)
+    }
+    return next
+  })
+  const promptBlocks=useMemo(()=>linkedPromptBlocks(w.promptBlockIds,w.annotations),[w.promptBlockIds,w.annotations])
+  const composedPrompt=[...promptBlocks.map(block=>block.text),w.prompt.trim()].filter(Boolean).join('\n\n')
   const selected = w.target ? [w.target,...w.attachments.filter((x)=>x!==w.target)] : w.attachments
-  const items = useMemo(()=>itemsFor(w,assets,runs,boot.demo),[w,assets,runs,boot.demo])
+  const items = useMemo(()=>itemsFor(w,assets,runs,boot.demo,now),[w,assets,runs,boot.demo,now])
   const positions = useMemo(()=>candidatePositions(runs,assets,w.positions),[runs,assets,w.positions])
   const image = (id:string|null)=>assets.find((a)=>a.id===id)
   const references = (w.referenceIds ?? []).flatMap((id)=>image(id) ?? [])
   const canvasIds = items.filter((item)=>!deletedIds.has(item.id)).map((item)=>item.id)
-  const rules = effectiveRules(w.styleStore)
+  const studyMode=w.studyMode ?? 'illustration'
+  const regionalEdit=!!w.target && w.guideMode==='mask'
+  const suggestedVariation=suggestVariation(composedPrompt,!!w.target)
+  const variation=w.variationAxis??suggestedVariation
+  const pauseStyle=studyMode!=='composition' && (studyMode!=='illustration' ||
+    (!regionalEdit && Number(w.settings.count)>1 && variation!=='composition' && variation!=='freeform'))
+  const rules = styleRulesForStudy(pauseStyle ? [] : effectiveRules(w.styleStore),studyMode)
   const style = activeStyle(w.styleStore)
-  const parts = promptParts({prompt:w.prompt,inputs:selected.flatMap((id)=>image(id)??[]),target:w.target,
+  const studyPreviews=studyDraft({prompt:composedPrompt,settings:w.settings,mode:studyMode,
+    inputs:selected.flatMap(id=>image(id)??[]),guideMode:w.guideMode,variation})
+  const needsPlan=studyPreviews.length>1
+  const missingReferences=missingImageMentions(composedPrompt,selected).length>0
+  const userBrief=resolveImageMentions(composedPrompt,selected.flatMap(id=>image(id)??[]))
+  const promptLength=needsPlan ? userBrief.length : studyPreviews[0].prompt.trim().length
+  const promptLimit=needsPlan ? MAX_BATCH_BRIEF_LENGTH : MAX_RUN_PROMPT_LENGTH
+  const partial=matchingBatch?.ids.length===studyPreviews.length && matchingBatch.ids.some(id=>!runs.some(run=>run.id===id))
+  const recoverPlanOnly=partial && (matchingBatch.fingerprint!==fingerprint ||
+    matchingBatch.ids.some(id=>runs.some(run=>run.id===id)))
+  const checkingSavedBatch=!recoveryUnavailable && (matchingBatch?.recoveryOnly || (needsPlan && recoverPlanOnly))
+  const lengthNotice=!checkingSavedBatch && promptLength>promptLimit ? `Use up to ${promptLimit.toLocaleString()} characters in the prompt.` : ''
+  const hasLiteralBrief=hasPromptText(composedPrompt)
+  const imageDirectedStudy=selected.length>0 && (studyMode!=='illustration' || (!!w.target && w.guideMode==='markup'))
+  const canSend=!missingReferences && !lengthNotice && !sending && !sent && !submitted &&
+    (studyMode==='illustration' || studyMode==='composition' || !!w.target) &&
+    (needsPlan ? hasLiteralBrief : !!studyPreviews[0].prompt.trim() && (hasLiteralBrief || imageDirectedStudy))
+  const parts = promptParts({prompt:studyPreviews[0].prompt,inputs:selected.flatMap((id)=>image(id)??[]),target:w.target,
     guideMode:w.guideMode,rules,styleName:style?.name})
   const layerImage = layer && image(layer.id)
   const layerRun = layer && runs.find((r)=>r.candidates.some((c)=>c.id===layer.id))
   const candidate = layerRun?.candidates.find((c)=>c.id===layer?.id)
   const retried = new Set(runs.flatMap((r)=>r.retriedFrom??[]))
-  const busy = runs.some((r)=>r.status==='pending'||r.candidates.some((c)=>c.reviewStatus==='pending'))
+  const deletedRunIds = new Set(w.deletedRunIds)
+  const canvasRuns = runs.filter((r)=>r.status!=='done'&&!r.candidates.length&&!retried.has(r.id)&&!deletedRunIds.has(r.id))
+  const busy = submissions.some(job=>job.status==='pending') || runs.some((r)=>r.status==='pending'||r.candidates.some((c)=>c.reviewStatus==='pending'))
+
+  useEffect(()=>{
+    if (!sent) return
+    const timer=window.setTimeout(()=>setSent(false),2200)
+    return ()=>window.clearTimeout(timer)
+  },[sent])
 
   useEffect(()=>{
     void refresh().catch((err)=>setError(message(err)))
@@ -89,33 +192,111 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
     return ()=>window.clearInterval(timer)
   },[busy,refresh])
 
+  useEffect(()=>{
+    const current=Date.now()
+    let nextDelay=Infinity
+    for (const run of runs) {
+      for (const item of run.candidates) {
+        if (item.seen) continue
+        const remaining=NEW_RESULT_MS-candidateAgeMs(item,run,current)
+        if (remaining>0 && remaining<nextDelay) nextDelay=remaining
+      }
+    }
+    if (!Number.isFinite(nextDelay)) return
+    const timer=window.setTimeout(()=>setNow(Date.now()),nextDelay+50)
+    return ()=>window.clearTimeout(timer)
+  },[runs,now])
+
+  async function importArticle() {
+    if(!articleInput?.trim()||articleLock.current)return
+    articleLock.current=true
+    setArticleStatus({busy:true})
+    try {
+      const {text,...article}=await client.importArticle(articleInput.trim())
+      if(session.snapshot().projectVersion!==projectVersion)return
+      const previous=session.snapshot().workspace.metaphorDraft
+      const context=[previous?.context,text].filter(Boolean).join('\n\n')
+      if(context.length>100000)throw new Error('The article and your notes exceed the brief limit. Shorten your notes and try again.')
+      patch({metaphorDraft:{...previous,context,article}})
+      setArticleInput(null)
+      setArticleStatus({})
+    } catch(error) {
+      if(session.snapshot().projectVersion===projectVersion)setArticleStatus({error:message(error)})
+    } finally {
+      articleLock.current=false
+    }
+  }
+
+  function selectMetaphor(id:string|null) {
+    setMetaphorMode(true);setMetaphorSelection(id)
+    requestAnimationFrame(()=>{
+      const field=frame.current?.querySelector<HTMLTextAreaElement>('#metaphor-input')
+      const focusable=field?.disabled?frame.current?.querySelector<HTMLInputElement>('.metaphor-composer-heading input:not(:disabled)'):field
+      focusable?.focus({preventScroll:true})
+    })
+  }
+
   function attachMany(ids:string[]) {
     const additions=ids.filter((id)=>!selected.includes(id))
     const available=8-selected.length
     const accepted=additions.slice(0,available)
-    if (accepted.length) patch({attachments:[...w.attachments,...accepted],active:accepted.at(-1)!})
+    if (accepted.length) patch({attachments:[...w.attachments,...accepted]})
     setNotice(additions.length>available?`Eight images at most. Remove one to add ${image(additions[available])?.name ?? 'another image'}.`:'')
   }
-  function remove(id:string) {
-    if (layer?.mode==='edit' && layer.id===id) closeLayer()
-    setWorkspace((prev)=>withoutAttachments(prev,new Set([id])))
+  function clearIllustration() {
+    if (layer?.mode==='edit') closeLayer()
+    patch({prompt:'',attachments:[],target:null,guideMode:'whole',promptBlockIds:[],referenceDirections:{}})
+    setHighlight(null)
     setNotice('')
   }
-  function deleteSelection(ids:string[],annotations?:Workspace['annotations']) {
+  function clearMetaphor() {
+    if (selectedMetaphor?.kind==='option' && metaphorSelection) {
+      metaphors.edit(metaphorSelection,{feedback:''})
+    } else if (!selectedMetaphor) {
+      patch({metaphorDraft:{context:''}})
+      setArticleInput(null)
+      setArticleStatus({})
+    }
+  }
+  function remove(id:string) { detachMany([id]) }
+  function detachMany(ids:string[]) {
+    const removed=new Set(ids)
+    if (layer?.mode==='edit' && removed.has(layer.id)) closeLayer()
+    setWorkspace((prev)=>withoutAttachments(prev,removed))
+    setNotice('')
+  }
+  function removePromptBlock(id:string) {
+    setWorkspace(prev=>({...prev,promptBlockIds:prev.promptBlockIds?.filter(link=>link!==id)}))
+  }
+  function togglePromptBlock(id:string) {
+    setWorkspace(prev=>{
+      const links=prev.promptBlockIds??[]
+      return {...prev,promptBlockIds:links.includes(id)?links.filter(link=>link!==id):[...links,id]}
+    })
+  }
+  function deleteSelection(ids:string[],markIds:string[]) {
     const removedIds = new Set(ids)
-    const previous = {attachments:w.attachments,target:w.target,active:w.active,guideMode:w.guideMode,annotations:w.annotations}
-    const redo = () => {
+    const previous = session.snapshot().workspace
+    const deletion=markIds.length?metaphors.deleteMarks(markIds):undefined
+    if(metaphorSelection&&markIds.includes(metaphorSelection))setMetaphorSelection(
+      metaphorSource&&!markIds.includes(metaphorSource.id)?metaphorSource.id:null)
+    let promptBeforeDelete = w.prompt
+    let promptAfterDelete = w.prompt
+    const removeImages = () => {
+      if(!ids.length)return
+      promptBeforeDelete=session.snapshot().workspace.prompt
       setWorkspace((prev)=>({
         ...withoutAttachments(prev,removedIds),
-        ...(ids.length?{deletedImageIds:[...new Set([...(prev.deletedImageIds ?? []),...ids])]}:{}),
-        ...(annotations?{annotations}:{}),
+        ...(prev.active && removedIds.has(prev.active)?{active:null}:{}),
+        deletedImageIds:[...new Set([...(prev.deletedImageIds ?? []),...ids])],
       }))
+      promptAfterDelete=session.snapshot().workspace.prompt
       setHighlight(null)
       setNotice('')
     }
-    const undo = () => setWorkspace((prev)=>{
+    const restoreImages = () => setWorkspace((prev)=>{
       const restoredIds = new Set(prev.deletedImageIds?.filter((id)=>removedIds.has(id)))
-      if (!restoredIds.size && !annotations) return prev
+      if (!restoredIds.size) return prev
       const attachments = [...prev.attachments]
       let {target,guideMode} = prev
       if (target===null && previous.target!==null && restoredIds.has(previous.target) && attachments.length<8) {
@@ -131,25 +312,45 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
         && (previous.active===target || attachments.includes(previous.active)) ? previous.active : null)
       return {
         ...prev,attachments,target,guideMode,active,
+        prompt:prev.prompt===promptAfterDelete?promptBeforeDelete:prev.prompt,
         deletedImageIds:prev.deletedImageIds?.filter((id)=>!restoredIds.has(id)),
-        ...(annotations?{annotations:previous.annotations}:{}),
       }
     })
+    removeImages()
+    return {
+      undo:()=>{deletion?.undo();restoreImages()},
+      redo:()=>{deletion?.redo();removeImages()},
+    }
+  }
+  function deleteMetaphor() {
+    if(!metaphorSelection||selectedMetaphor?.kind!=='option')return
+    session.history.record(deleteSelection([], [metaphorSelection]))
+    selectMetaphor(metaphorSource?.id??null)
+  }
+  function deleteRun(id:string) {
+    const redo = () => setWorkspace((prev)=>({...prev,deletedRunIds:[...new Set([...(prev.deletedRunIds ?? []),id])]}))
+    const undo = () => setWorkspace((prev)=>({...prev,deletedRunIds:prev.deletedRunIds?.filter((runId)=>runId!==id)}))
     redo()
     return {undo,redo}
   }
-  function open(id:string,mode:Layer['mode']) {
+  function open(id:string,mode:Layer['mode'],initialLayer?:'area'|'sketch') {
     const node=frame.current?.querySelector<HTMLElement>(`.tile[data-id="${CSS.escape(id)}"]`)
-    setLayer({id,mode,origin:node?.getBoundingClientRect()})
+    setLayer({id,mode,initialLayer,origin:node?.getBoundingClientRect()})
     setDetails(null)
     if (mode==='edit') {
+      setMetaphorMode(false)
       if (!selected.includes(id) && selected.length===8) {
         setLayer(null); setNotice('Eight images at most. Remove one to edit this image.'); return
       }
       const guides=w.guides[id]??[]
       const current=guides.filter((g)=>!g.erase).at(-1)
+      const attachments=w.attachments.filter(reference=>reference!==id)
+      if (w.target && w.target!==id && missingImageMentions(composedPrompt,attachments).includes(w.target)) {
+        attachments.unshift(w.target)
+      }
       patch({target:id,guideMode:id===w.target?w.guideMode:current?.layer==='area'?'mask':current?'markup':'whole',
-        attachments:w.attachments.filter((x)=>x!==id),active:null})
+        attachments,active:null,
+        ...(studyMode==='composition'?{studyMode:'illustration'}:{})})
     } else {
       const run=runs.find((r)=>r.candidates.some((c)=>c.id===id))
       if (run) void client.candidate(run.id,id,{kind:'seen'}).then(refresh).catch((e)=>setError(message(e)))
@@ -186,13 +387,17 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
     const previousPositions=Object.fromEntries(ids.map((id)=>[id,previous.positions[id]]))
     const previousInputs={target:previous.target,guideMode:previous.guideMode,attachments:previous.attachments,active:previous.active}
 
-    const redo=()=>setWorkspace((prev)=>({
-      ...prev,
-      imageIds:[...prev.imageIds,...newIds.filter((id)=>!prev.imageIds.includes(id))],
-      deletedImageIds:prev.deletedImageIds?.filter((id)=>!placed.has(id)),
-      positions:{...prev.positions,...positions},
-      ...(attach?{target:null,guideMode:'whole',attachments:ids,active:ids.at(-1)!}:{}),
-    }))
+    let promptBeforePlacement=previous.prompt
+    const redo=()=>setWorkspace((prev)=>{
+      promptBeforePlacement=prev.prompt
+      return {
+        ...prev,
+        imageIds:[...prev.imageIds,...newIds.filter((id)=>!prev.imageIds.includes(id))],
+        deletedImageIds:prev.deletedImageIds?.filter((id)=>!placed.has(id)),
+        positions:{...prev.positions,...positions},
+        ...(attach?{target:null,guideMode:'whole',attachments:ids,active:ids.at(-1)!}:{}),
+      }
+    })
     const undo=()=>setWorkspace((prev)=>{
       const restored={...prev.positions}
       for (const id of ids) {
@@ -202,8 +407,13 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
       const removedInputs=new Set(ids.filter((id)=>!prev.referenceIds?.includes(id)))
       const inputsUnchanged=attach && prev.target===null && prev.attachments.length===ids.length
         && prev.attachments.every((id,index)=>id===ids[index])
+      const prePlacementInputs=new Set(previousInputs.attachments)
+      if (previousInputs.target) prePlacementInputs.add(previousInputs.target)
+      const restorePrompt=inputsUnchanged &&
+        keepAttachedMentions(prev.prompt,prePlacementInputs).trim()===keepAttachedMentions(promptBeforePlacement,new Set(ids)).trim()
       return {
         ...withoutAttachments(prev,removedInputs),
+        ...(restorePrompt?{prompt:promptBeforePlacement}:{}),
         imageIds:prev.imageIds.filter((id)=>!added.has(id)),
         positions:restored,
         deletedImageIds:restoredTombstones.length
@@ -213,7 +423,7 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
       }
     })
     redo()
-    board.current?.recordEdit({undo,redo})
+    session.history.record({undo,redo})
   }
 
   async function importBoard(batch:File[],at?:Point,attach=false) {
@@ -272,12 +482,6 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
     setBoot((prev)=>({...prev,assets:prev.assets.map((asset)=>asset.id===id?renamed:asset)}))
   }
 
-  function locateAttachment(id:string) {
-    if (id===w.target) open(id,'edit')
-    else if (board.current?.getImageRect(id)) board.current.locate(id)
-    else if (w.referenceIds?.includes(id)) setShowReferences(true)
-  }
-
   useEffect(()=>{
     const key=(e:KeyboardEvent)=>{
       if (e.key==='Tab') delete document.documentElement.dataset.modality
@@ -285,28 +489,35 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
       if (!frame.current?.querySelector('#workspace-menu')) closeLayer()
     }
     const paste=(e:ClipboardEvent)=>{
-      if (projectToOpen||imageToRename) return
-      const batch=Array.from(e.clipboardData?.files??[]).filter((file)=>file.type.startsWith('image/'))
+      if (projectToOpen||imageToRename||layer||details) return
+      const batch=clipboardImages(e.clipboardData,document.activeElement)
       if (batch.length) { e.preventDefault(); void importBoard(batch) }
     }
     window.addEventListener('keydown',key)
     window.addEventListener('paste',paste)
     return ()=>{window.removeEventListener('keydown',key);window.removeEventListener('paste',paste)}
   })
-  async function send() {
-    if (sendLock.current||!w.prompt.trim()) return
+  async function send(startFresh=false) {
+    if (sendLock.current || !canSend || recoveryUnavailable!==startFresh) return
+    const previous=startFresh?undefined:matchingBatch
+    if(previous?.recoveryOnly) {
+      // Import already reconciled durable results. A missing image may still
+      // have been charged on the source board, even for a single-image batch.
+      setUnavailableBatch(previous.ids[0])
+      return
+    }
+    const batch=previous && partial ? previous : {fingerprint,ids:studyPreviews.map(()=>crypto.randomUUID())}
+    const submissionIds=batch.ids
+    const recoveryOnly=!startFresh && recoverPlanOnly
     sendLock.current=true
+    setError('')
+    setSending(true)
+    setSent(true)
     try {
       const target=image(w.target)
       const guide=target?w.guides[target.id]??[]:[]
       const guideMode=target?w.guideMode:'whole'
-      let guidePng:string|undefined
-      if (target&&guideMode!=='whole') {
-        const ctx=guideLayer(guide,guideMode==='mask'?'area':'sketch',target.width,target.height)
-        if (guidePercent(ctx)===0) throw new Error(w.guideMode==='mask'?'Paint an edit area before sending.':'Draw a sketch before sending.')
-        guidePng=ctx.canvas.toDataURL('image/png').split(',')[1]
-      }
-      const saved=style&&saveStyleVersion(style)
+      const saved=!pauseStyle&&style&&saveStyleVersion(style)
       const snapshot=saved?{name:saved.name,version:saved.version,rules}:null
       if (saved && saved!==style) setWorkspace((prev)=>({
         ...prev,styleStore:{...prev.styleStore,styles:prev.styleStore.styles.map((s)=>s.id===saved.id?saved:s)},
@@ -315,26 +526,80 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
       const center=board.current?.center()??{x:48,y:72}
       const [px,py]=SIZES[w.settings.size].split('x').map(Number)
       const sourceRect=inputRects[0]
-      const width=sourceRect?.width??176
+      const width=studyMode==='composition'?144:sourceRect?.width??176
       const height=target?width*target.height/target.width:width*py/px
       let x=inputRects.length?Math.max(...inputRects.map((r)=>r.x+r.width))+24:center.x-width/2
       const y=sourceRect?.y??center.y-height/2
-      const rowWidth=(width+6)*Number(w.settings.count)
+      const rowWidth=(width+12)*Number(w.settings.count)
       const occupied=[...items.flatMap((i)=>board.current?.getImageRect(i.id)??[]),
-        ...runs.filter((r)=>r.status!=='done').map((r)=>({...r.rect,width:(r.rect.width+6)*Number(r.settings.count)}))]
+        ...w.annotations.filter(mark=>mark.kind==='prompt').map(markRect),
+        ...submissions.filter(job=>!submissionIds.includes(job.id)).map(job=>job.rect),
+        ...runs.filter((r)=>r.status!=='done'&&!deletedRunIds.has(r.id)).map((r)=>({...r.rect,width:(r.rect.width+6)*Number(r.settings.count)}))]
       for (const other of occupied.sort((a,b)=>a.x-b.x)) {
         if (x<other.x+other.width+8 && x+rowWidth+8>other.x && y<other.y+other.height+8 && y+height+8>other.y) x=other.x+other.width+16
       }
-      const run=await client.submit({id:crypto.randomUUID(),prompt:w.prompt,inputs:selected,target:w.target,
-        guideMode,guide,guidePng,settings:w.settings,style:snapshot,rect:{x,y,width,height}})
-      setBoot((prev)=>({...prev,runs:[...prev.runs.filter((r)=>r.id!==run.id),run]}))
-      if (Object.keys(w.styleStore.overrides).length) setWorkspace((prev)=>prev.styleStore.overrides===w.styleStore.overrides
-        ? {...prev,styleStore:{...prev.styleStore,overrides:{}}}
-        : prev)
-      if (run.status==='failed'||run.status==='uncertain') setDetails(run.id)
+      const drafts=studyPreviews.map((_,index)=>({id:submissionIds[index],label:composedPrompt.slice(0,65),
+        rect:submissions.find(job=>job.id===submissionIds[index])?.rect ?? {x:x+index*(width+12),y,width,height},
+        status:'pending' as const}))
+      const outstanding=drafts.filter(job=>!runs.some(run=>run.id===job.id))
+      session.setSubmissions(previous=>[...previous.filter(job=>!submissionIds.includes(job.id)),...outstanding])
+      setWorkspace(prev=>({...prev,pendingSubmission:batch,
+        runBriefs:{...prev.runBriefs,...Object.fromEntries(outstanding.map(({id})=>[id,{prompt:composedPrompt,referenceDirections:w.referenceDirections??{}}]))}}))
       if (layer?.mode==='edit') closeLayer()
-    } catch (err) { setError(message(err)) }
-    finally { sendLock.current=false }
+      // Paint the acknowledgement and placeholders before preparing large edit guides.
+      await new Promise<void>(resolve=>{
+        const fallback=setTimeout(resolve,50)
+        requestAnimationFrame(()=>{clearTimeout(fallback);setTimeout(resolve,0)})
+      })
+      let guidePng:string|undefined
+      if (target&&guideMode!=='whole') {
+        const ctx=guideLayer(guide,guideMode==='mask'?'area':'sketch',target.width,target.height)
+        if (guidePercent(ctx)===0) throw new Error(w.guideMode==='mask'?'Paint an edit area before sending.':'Draw a sketch before sending.')
+        guidePng=ctx.canvas.toDataURL('image/png').split(',')[1]
+      }
+      await session.flush()
+      const axis=regionalEdit?'freeform':studyAxis(studyMode,variation)
+      const plan=!needsPlan?null:recoveryOnly?await client.recoverPlan(submissionIds[0]):await client.planCompositions({
+        contractVersion:BATCH_PLAN_CONTRACT_VERSION,regionalEdit,id:submissionIds[0],count:studyPreviews.length,inputs:selected,userBrief,
+        ...(axis==='composition'?{}:{axis}),
+        prompt:[`Output format: ${w.settings.size} (${SIZES[w.settings.size]}). Compose every alternative within this aspect ratio.`,...(regionalEdit?['These are local edits around the painted area. Coordinate different ways to apply the requested local change; preserve the rest of the source composition.']:[]),...parts.map(part=>part.text)].join('\n')})
+      if (needsPlan && !plan) {
+        setUnavailableBatch(submissionIds[0])
+        session.setSubmissions(previous=>previous.filter(job=>!submissionIds.includes(job.id)))
+        setSent(false)
+        return
+      }
+      for (const [index,study] of studyPreviews.entries()) {
+        const id=submissionIds[index]
+        if (session.snapshot().boot.runs.some(run=>run.id===id)) continue
+        const run=await client.submit({id,prompt:plan?renderComposition(study.prompt,plan,index,axis,studyMode):study.prompt,inputs:selected,target:w.target,
+          guideMode,guide,guidePng,settings:study.settings,style:snapshot,rect:drafts[index].rect})
+        setBoot((prev)=>({...prev,runs:[...prev.runs.filter((r)=>r.id!==run.id),run]}))
+        if (run.status==='failed'||run.status==='uncertain') setDetails(run.id)
+      }
+      // A new draft typed during submission should remain immediately sendable.
+      if (draftKey(session.snapshot().workspace)!==fingerprint) return
+      if (Object.keys(w.styleStore.overrides).length) setWorkspace(prev=>{
+        if (prev.styleStore.overrides!==w.styleStore.overrides) return prev
+        const next={...prev,styleStore:{...prev.styleStore,overrides:{}}}
+        return draftKey(prev)===fingerprint
+          ? {...next,pendingSubmission:{fingerprint:draftKey(next),ids:submissionIds}} : next
+      })
+    } catch (err) {
+      const error=message(err)
+      session.setSubmissions(previous=>previous.map(job=>submissionIds.includes(job.id)?{...job,status:'failed',error}:job))
+      setSent(false)
+      setError(error)
+    }
+    finally { sendLock.current=false;setSending(false) }
+  }
+
+  function changeStudy(mode:StudyMode) {
+    patch({studyMode:mode,...(mode==='composition'?{target:null,guideMode:'whole',attachments:selected}:{})})
+  }
+  function togglePin(id:string) {
+    setWorkspace(prev=>({...prev,pinnedIds:prev.pinnedIds?.includes(id)
+      ? prev.pinnedIds.filter(item=>item!==id) : [...(prev.pinnedIds??[]),id]}))
   }
 
   async function candidateAction(action:CandidateAction) {
@@ -346,16 +611,20 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
     if (!candidate||!layerRun) return
     const id=candidate.id
     const refs=layerRun.inputs.filter((a)=>a!==layerRun.target)
-    patch({target:id,guideMode:layerRun.guideMode,prompt,attachments:refs.slice(0,7),
-      guides:{...w.guides,[id]:layerRun.guide},active:null})
+    const original=w.runBriefs?.[layerRun.id]
+    const brief=prompt===layerRun.prompt&&original?original.prompt:prompt
+    patch({target:id,guideMode:layerRun.guideMode,prompt:layerRun.target?brief.replaceAll(imageMention(layerRun.target),imageMention(id)):brief,
+      referenceDirections:original?.referenceDirections??w.referenceDirections,promptBlockIds:[],attachments:refs.slice(0,7),
+      guides:{...w.guides,[id]:layerRun.guide},active:null,studyMode:'illustration'})
     if (refs.length>7) setNotice('The revision has seven references plus its edit target. Remove a reference to restore the eighth.')
-    setLayer(null)
+    setLayer(null);setMetaphorMode(false)
     requestAnimationFrame(()=>frame.current?.querySelector<HTMLElement>('#prompt')?.focus())
   }
 
   async function openProject(file:File) {
+    board.current?.finishWheel()
     await session.openProject(file)
-    setLayer(null);setDetails(null);setError('');setShowReferences(false)
+    setLayer(null);setDetails(null);setError('');setShowReferences(false);setMetaphorSelection(null);setMetaphorMode(false);setArticleInput(null);setArticleStatus({})
   }
 
   return <main className={`frame${dragging?' dropping':''}`} id="frame" ref={frame}
@@ -372,44 +641,105 @@ export function App({session,catalogue,focusWorkspace,onBoardSelect,onBoardCreat
       e.preventDefault();setDragging(false)
       if (!projectToOpen&&!imageToRename) void importBoard(Array.from(e.dataTransfer.files),board.current?.clientToWorld(e.clientX,e.clientY))
     }}>
-    <Board key={projectVersion} ref={board} items={items} positions={positions} deletedImageIds={w.deletedImageIds}
+    <Board key={projectVersion} ref={board} history={session.history} items={items} positions={positions} deletedImageIds={w.deletedImageIds}
+      pinnedIds={w.pinnedIds} onTogglePin={togglePin} onAnnotate={id=>open(id,'edit','sketch')}
       camera={w.camera} annotations={w.annotations}
+      metaphorStatus={metaphorStatus} selectedMetaphor={metaphorMode?selectedMetaphorId??null:null} onSelectMetaphor={selectMetaphor}
+      promptBlockIds={w.promptBlockIds} onTogglePromptBlock={togglePromptBlock}
       attachments={selected} active={w.active} target={w.target} highlighted={highlight} disabled={!!layer}
-      jobs={runs.filter((r)=>r.status!=='done'&&!r.candidates.length&&!retried.has(r.id)).map((r)=>({
+      jobs={[...canvasRuns.map((r)=>({
         id:r.id,label:r.label,status:r.status,rect:r.rect,onOpen:()=>setDetails(r.id),
-      }))}
+        onDelete:r.status==='failed'||r.status==='uncertain'?()=>deleteRun(r.id):undefined,
+      })),...submissions.filter(job=>!deletedRunIds.has(job.id)).map(job=>({...job,
+        onOpen:()=>{if(job.error)setError(job.error)},
+        onDelete:job.status==='failed'?()=>deleteRun(job.id):undefined,
+      }))]}
       onChange={(p)=>patch(p)} onActive={(active)=>patch({active})} onHighlight={setHighlight}
-      onToggle={(id)=>selected.includes(id)?remove(id):attachMany([id])} onAttachMany={attachMany}
+      onToggle={(id)=>selected.includes(id)?remove(id):attachMany([id])} onAttachMany={attachMany} onDetachMany={detachMany}
       onEdit={(id)=>open(id,'edit')} onRename={showRenameImage} onDelete={deleteSelection} onReview={(id)=>open(id,'review')} onFlatten={(file,point)=>importBoard([file],point,true)}/>
-    {items.every((item)=>deletedIds.has(item.id))&&!w.annotations.length&&!runs.length&&<button type="button" className="btn lead empty-import" onClick={()=>files.current?.click()}><Icon name="upload"/>Import images</button>}
+    {items.every((item)=>deletedIds.has(item.id))&&!w.annotations.length&&!canvasRuns.length&&!submissions.length&&<button type="button" className="btn lead empty-import" onClick={()=>files.current?.click()}><Icon name="upload"/>Import images</button>}
     <div className="frame-navigation" inert={!!layer || undefined}>
       <button ref={referencesButton} className="btn" type="button" aria-haspopup="dialog"
-        aria-expanded={showReferences} onClick={()=>setShowReferences(!showReferences)}>References</button>
+        aria-expanded={showReferences} onClick={()=>{setShowReferences(!showReferences);setShowPins(false)}}>References</button>
+      <button ref={pinsButton} className="btn" type="button" aria-haspopup="dialog"
+        aria-expanded={showPins} onClick={()=>{setShowPins(!showPins);setShowReferences(false)}}>Pinned{w.pinnedIds?.length ? ` (${w.pinnedIds.length})` : ''}</button>
       <button className="btn lead import" type="button" onClick={()=>files.current?.click()} data-tip="Or drop images anywhere"><Icon name="upload"/>Import</button>
-      <WorkspaceMenu catalogue={catalogue} focusOnMount={focusWorkspace} onSelect={onBoardSelect} onCreate={onBoardCreate} onRename={onBoardRename} onSetArchived={onBoardSetArchived}
+      <WorkspaceMenu catalogue={catalogue} focusOnMount={focusWorkspace}
+        provider={boot.provider} sessionKey={Boolean(boot.sessionKey)}
+        onSelect={(id)=>{board.current?.finishWheel();return onBoardSelect(id)}}
+        onCreate={(name)=>{board.current?.finishWheel();return onBoardCreate(name)}} onRename={onBoardRename}
+        onSetArchived={(id,archived)=>{board.current?.finishWheel();return onBoardSetArchived(id,archived)}}
+        onSaveApiKey={async(apiKey)=>{
+          const status=await providerCredentials.save(apiKey)
+          setBoot((prev)=>({...prev,provider:status.provider,sessionKey:status.sessionKey}))
+        }}
+        onClearApiKey={async()=>{
+          const status=await providerCredentials.clear()
+          setBoot((prev)=>({...prev,provider:status.provider,sessionKey:status.sessionKey}))
+        }}
         onRuns={()=>setDetails('all')} onOpenProject={()=>projectFile.current?.click()}
-        onExport={()=>void session.flush().then(()=>{
-          const link=document.createElement('a')
-          link.href=client.exportUrl;link.download='charcoal-project.json';link.click()
-        }).catch((err)=>setError(message(err)))}/>
+        onExport={()=>{
+          board.current?.finishWheel()
+          void session.flush().then(()=>{
+            const link=document.createElement('a')
+            link.href=client.exportUrl;link.download='charcoal-project.json';link.click()
+          }).catch((err)=>setError(message(err)))
+        }}/>
     </div>
     {showReferences && !layer && <ReferenceLibrary assets={references} attachedIds={selected} canvasIds={canvasIds}
       onUpload={uploadReferences} onAttach={(id)=>selected.includes(id)?remove(id):attachMany([id])}
       onPlace={placeReference} onRename={showRenameImage} onRemove={removeReference} onClose={()=>setShowReferences(false)} triggerRef={referencesButton}/>}
+    {showPins && !layer && <PinnedImages assets={(w.pinnedIds??[]).flatMap(id=>image(id)??[])} onUnpin={togglePin}
+      onRefine={id=>{setShowPins(false);open(id,'edit')}} onLocate={id=>{
+        if (!canvasIds.includes(id)) placeReference(id)
+        else board.current?.locate(id)
+      }} onClose={()=>setShowPins(false)} triggerRef={pinsButton} />}
     <input type="file" ref={files} aria-label="Import images" accept="image/*" multiple hidden onChange={(e)=>{void importBoard(Array.from(e.target.files??[]));e.target.value=''}}/>
     <input type="file" ref={projectFile} aria-label="Open project" accept="application/json,.json" hidden onChange={(e)=>{
       const file=e.target.files?.[0]
       if (file) setProjectToOpen(file)
       e.target.value=''
     }}/>
-    <Composer assets={assets} attachments={selected} target={w.target} guideMode={w.guideMode}
-      prompt={w.prompt} settings={w.settings} styleStore={w.styleStore} parts={parts} checks={rules.filter((r)=>r.check.trim()).map((r)=>r.title)}
-      notice={notice||undefined} highlighted={highlight} onPrompt={(prompt)=>patch({prompt})}
+    <Composer key={`composer-${projectVersion}`} onMode={setMetaphorMode} onClear={clearIllustration}
+      metaphor={metaphorMode?{
+        data:selectedMetaphor,context,status:shownStatus,optionCount:matchingOptions.length,
+        canAppend,pendingRequest:!!shownMetaphor?.request,
+        article:selectedMetaphor?selectedMetaphor.article:draft.article,
+        articleImport:!selectedMetaphor?{input:articleInput,status:articleStatus,
+          onInput:value=>{setArticleInput(value);setArticleStatus({})},
+          onImport:()=>void importArticle()}:undefined,
+        sourceAvailable:!!metaphorSource,hasPrompt:!!w.annotations.find(mark=>mark.id===selectedMetaphor?.promptId&&mark.kind==='prompt'),
+        onContext:context=>selectedMetaphorId?metaphors.edit(selectedMetaphorId,{context}):patch({metaphorDraft:{...draft,context}}),
+        onEdit:update=>{if(selectedMetaphorId)metaphors.edit(selectedMetaphorId,update)},
+        onClear:clearMetaphor,
+        onSubmit:()=>selectedMetaphorId?void metaphors.explore(selectedMetaphorId):metaphors.submitDraft(),
+        onAdd:()=>{if(shownId)void metaphors.explore(shownId)},
+        onRestart:()=>{if(shownId)void metaphors.explore(shownId,true)},
+        onDelete:deleteMetaphor,
+        onLocate:()=>{if(shownId)board.current?.locateGroup([shownId,...matchingOptions.map(mark=>mark.id)])},
+        onDraft:()=>selectMetaphor(null),onSource:()=>{if(metaphorSource)selectMetaphor(metaphorSource.id)},
+        onPrompt:()=>{
+          const id=metaphorSelection&&metaphors.useAsPrompt(metaphorSelection)
+          if(id)board.current?.locate(id)
+        },
+      }:undefined}
+      assets={assets} attachments={selected} target={w.target} guideMode={w.guideMode}
+      studyMode={studyMode} onStudyMode={changeStudy}
+      studyPreviews={studyPreviews} sending={sending} generating={sending||submissions.some(job=>job.status==='pending')||runs.some(run=>run.status==='pending')} sent={sent}
+      canSend={canSend&&!recoveryUnavailable} missingReferences={missingReferences}
+      onStartFresh={recoveryUnavailable&&canSend?()=>void send(true):undefined}
+      variation={variation} suggestedVariation={suggestedVariation} isSuggested={!w.variationAxis} pauseStyle={pauseStyle}
+      onVariation={variationAxis=>patch({variationAxis})}
+      prompt={w.prompt} promptBlocks={promptBlocks} onRemovePromptBlock={removePromptBlock}
+      onLocatePromptBlock={id=>board.current?.locate(id)} onReorderPromptBlocks={promptBlockIds=>patch({promptBlockIds})}
+      settings={w.settings} styleStore={w.styleStore} parts={parts} checks={rules.filter((r)=>r.check.trim()).map((r)=>r.title)}
+      notice={lengthNotice||notice||undefined} highlighted={highlight} onPrompt={(prompt)=>{setSent(false);patch({prompt})}}
       onSettings={(settings)=>patch({settings})} onStyleStore={(styleStore)=>patch({styleStore})}
-      onSend={()=>void send()} onRemove={remove} onLocate={locateAttachment}
+      onSend={()=>void send()} onRemove={remove}
       onHighlight={setHighlight} onReorder={(ids)=>patch({attachments:ids.filter((id)=>id!==w.target)})}
       onImportExamples={(batch)=>session.runAssetImport(()=>upload(batch))} onGuideMode={(guideMode:GuideMode)=>patch({guideMode})}/>
     {layer?.mode==='edit'&&layerImage&&<Edit key={layer.id} asset={layerImage} guides={w.guides[layer.id]??[]} mode={w.guideMode}
+      initialLayer={layer.initialLayer}
       origin={layer.origin} onClose={closeLayer} onChange={(guides,guideMode)=>patch({guides:{...w.guides,[layer.id]:guides},guideMode})}/>}
     {layer?.mode==='review'&&layerImage&&layerRun&&candidate&&<Review key={layer.id} asset={layerImage} assets={assets}
       run={layerRun} candidate={candidate} action={candidateAction} onClose={closeLayer} onRevise={revise}

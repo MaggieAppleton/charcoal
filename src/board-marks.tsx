@@ -1,6 +1,8 @@
 import type { BoardImage, BoardMark, Point, Rect } from './board-geometry.js';
 import { between, distance } from './board-geometry.js';
 
+import { METAPHOR_SIZE } from './metaphor-layout';
+
 const INK = '#1d1c1a';
 const PAPER = '#f7f6f2';
 const NOTE_WIDTH = 156;
@@ -22,7 +24,10 @@ function pointString(points: Point[]) {
 
 export function markRect(mark: BoardMark): Rect {
   const [start] = mark.points;
-  if (mark.kind === 'note') return { ...start, width: NOTE_WIDTH, height: NOTE_HEIGHT };
+  if (mark.metaphor) return {...start,...METAPHOR_SIZE[mark.metaphor.kind]};
+  if (mark.kind === 'note' || mark.kind === 'prompt') {
+    return { ...start, width: mark.kind === 'prompt' ? 224 : NOTE_WIDTH, height: NOTE_HEIGHT };
+  }
   const line = mark.kind === 'arrow' ? [...mark.points, ...arrowHead(start, mark.points.at(-1)!)] : mark.points;
   let minX = start.x, minY = start.y, maxX = start.x, maxY = start.y;
   for (const { x, y } of line) {
@@ -57,7 +62,7 @@ export function hitMark(mark: BoardMark, point: Point, tolerance: number): boole
   if (point.x < bounds.x - tolerance || point.x > bounds.x + bounds.width + tolerance ||
       point.y < bounds.y - tolerance || point.y > bounds.y + bounds.height + tolerance) return false;
   const [start] = mark.points, end = mark.points.at(-1)!;
-  if (mark.kind === 'note') return true;
+  if (mark.kind === 'note' || mark.kind === 'prompt') return true;
   if (mark.kind === 'ellipse') {
     const { x, y, width, height } = between(start, end);
     if (!width || !height) return segmentDistance(point, start, end) <= tolerance;
@@ -75,7 +80,7 @@ export function hitMark(mark: BoardMark, point: Point, tolerance: number): boole
 
 export function BoardMarkArt({ mark }: { mark: BoardMark }) {
   const [start] = mark.points, end = mark.points.at(-1)!;
-  if (mark.kind === 'note') return null;
+  if (mark.kind === 'note' || mark.kind === 'prompt') return null;
   if (mark.kind === 'pen') {
     if (mark.points.length === 1) return <circle cx={start.x} cy={start.y} r={1.5} fill="currentColor" />;
     return <polyline points={pointString(mark.points)} />;

@@ -218,3 +218,6 @@ svg{display:block;flex:none}
   .refs .col{width:calc((100cqw - 32px - 10px) / 2)}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+.composer-generation-indicator{width:14px;height:14px;flex:none;border:1.5px solid var(--line);border-top-color:var(--muted);border-radius:50%;animation:composer-progress .8s linear infinite}
+@keyframes composer-progress{to{transform:rotate(360deg)}}

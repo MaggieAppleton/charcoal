@@ -5,10 +5,13 @@ import type { BoardMark, Camera, Point, Rect } from './board-geometry.js';
 import { hitMark, markRect } from './board-marks.js';
 
 export type BoardTool = 'select' | 'hand' | 'erase' | BoardMark['kind'];
+export type MarkChanges = Map<string,{mark:BoardMark;index:number}|null>;
 export type BoardPatch = {
   positions?: Record<string, Rect>;
   camera?: Camera;
   annotations?: BoardMark[];
+  markChanges?: MarkChanges;
+  markPoints?: Record<string, Point[]>;
 };
 
 type Gesture =
@@ -22,6 +25,7 @@ type Gesture =
 type PointerGesture = {
   pointer: number;
   screen: Point;
+  camera: Camera;
   world: Point;
   lastWorld: Point;
   moved: boolean;
@@ -38,29 +42,33 @@ type Preview = {
 };
 type Options = {
   viewport: RefObject<HTMLDivElement | null>;
-  camera: Camera;
+  readCamera: () => Camera;
   tool: BoardTool;
   space: RefObject<boolean>;
   marks: BoardMark[];
   positions: Record<string, Rect>;
-  attachments: string[];
-  imageSelection: Set<string> | null;
+  imageSelection: Set<string>;
   markSelection: string[];
   onCommit: (patch: BoardPatch) => void;
-  onToggle: (id: string) => void;
+  onErase: (ids: string[]) => void;
+  onPreviewCamera: (camera: Camera | null) => void;
+  onCommitCamera: (camera: Camera) => void;
+  onSelectImage: (id: string, additive: boolean) => void;
   onActive: (id: string | null) => void;
   onSelectMarks: (ids: string[]) => void;
-  onMarqueeImages: (ids: string[]) => void;
-  onNewNote: (mark: BoardMark) => void;
+  onMarqueeImages: (ids: string[], additive: boolean) => void;
+  onNewText: (mark: BoardMark) => void;
+  onClickMetaphor: (id: string) => void;
 };
 
 function selectGesture(
-  element: Element, point: Point, shift: boolean, opts: Options,
+  element: Element, point: Point, shift: boolean, opts: Options, camera: Camera,
 ): Gesture {
   const resize = (element.closest('[data-board-resize]') as HTMLElement | null)?.dataset.boardResize;
   if (resize) return { kind: 'resize', image: resize };
-  const selected = Array.from(opts.imageSelection ?? opts.attachments).filter(id => opts.positions[id]);
-  const mark = opts.marks.findLast(item => hitMark(item, point, 6 / opts.camera.zoom));
+  const selected = Array.from(opts.imageSelection).filter(id => opts.positions[id]);
+  const card = element.closest<HTMLElement>('[data-board-metaphor]')?.dataset.boardMetaphor;
+  const mark = card ? opts.marks.find(item => item.id === card) : opts.marks.findLast(item => hitMark(item, point, 6 / camera.zoom));
   if (mark) return {
     kind: 'move', mark: mark.id,
     images: opts.markSelection.includes(mark.id) ? selected : [],
@@ -76,38 +84,39 @@ function selectGesture(
 }
 
 function startGesture(event: PointerEvent, screen: Point, opts: Options): PointerGesture {
-  const world = toWorld(screen, opts.camera);
+  const camera = opts.readCamera();
+  const world = toWorld(screen, camera);
   let gesture: Gesture;
   if (event.button === 1 || opts.space.current || opts.tool === 'hand') {
-    gesture = { kind: 'pan', original: opts.camera };
+    gesture = { kind: 'pan', original: camera };
   } else if (opts.tool === 'erase') {
     gesture = { kind: 'erase', ids: new Set() };
   } else if (opts.tool !== 'select') {
     gesture = { kind: 'draw', mark: { id: crypto.randomUUID(), kind: opts.tool, points: [world] } };
   } else {
-    gesture = selectGesture(event.target as Element, world, event.shiftKey, opts);
+    gesture = selectGesture(event.target as Element, world, event.shiftKey, opts, camera);
     if (gesture.kind === 'marquee' && event.pointerType === 'touch' && !event.shiftKey) {
-      gesture = { kind: 'pan', original: opts.camera };
+      gesture = { kind: 'pan', original: camera };
     }
   }
-  return { pointer: event.pointerId, screen, world, lastWorld: world, moved: false, gesture, shift: event.shiftKey };
+  return { pointer: event.pointerId, screen, camera, world, lastWorld: world, moved: false, gesture, shift: event.shiftKey };
 }
 
-function eraseAlong(opts: Options, ids: Set<string>, start: Point, end: Point) {
-  const step = 6 / opts.camera.zoom;
+function eraseAlong(opts: Options, ids: Set<string>, start: Point, end: Point, camera: Camera) {
+  const step = 6 / camera.zoom;
   const n = Math.min(128, Math.max(1, Math.ceil(distance(start, end) / step)));
   for (let i = 0; i <= n; i++) {
     const progress = i / n;
     const point = { x: start.x + (end.x - start.x) * progress, y: start.y + (end.y - start.y) * progress };
     for (const mark of opts.marks) {
-      if (!ids.has(mark.id) && hitMark(mark, point, step)) ids.add(mark.id);
+      if (mark.kind !== 'prompt' && !ids.has(mark.id) && hitMark(mark, point, step)) ids.add(mark.id);
     }
   }
 }
 
 function gesturePreview(active: PointerGesture, screen: Point, opts: Options): Preview {
-  const { gesture } = active;
-  const point = toWorld(screen, opts.camera);
+  const { gesture, camera } = active;
+  const point = toWorld(screen, camera);
   const dx = point.x - active.world.x, dy = point.y - active.world.y;
   const moved = active.moved ||= distance(screen, active.screen) > 4;
   const previous = active.lastWorld;
@@ -143,13 +152,13 @@ function gesturePreview(active: PointerGesture, screen: Point, opts: Options): P
     case 'marquee':
       return moved ? { marquee: between(active.world, point) } : {};
     case 'erase':
-      eraseAlong(opts, gesture.ids, previous, point);
+      eraseAlong(opts, gesture.ids, previous, point, camera);
       return { marks: opts.marks.filter(mark => !gesture.ids.has(mark.id)) };
     case 'draw': {
       const { mark } = gesture;
-      if (mark.kind === 'note') return { drawing: mark };
+      if (mark.kind === 'note' || mark.kind === 'prompt') return { drawing: mark };
       if (mark.kind === 'pen') {
-        if (distance(mark.points.at(-1)!, point) * opts.camera.zoom >= 1 && mark.points.length < 12000) {
+        if (distance(mark.points.at(-1)!, point) * camera.zoom >= 1 && mark.points.length < 12000) {
           mark.points.push(point);
         }
       } else {
@@ -175,19 +184,19 @@ export function useBoardGestures(options: Options) {
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 && event.button !== 1) return;
     const element = event.target as Element;
-    if (element.closest('button:not([data-board-image], [data-board-resize]), textarea, input, .board-job, .ctx')) return;
+    if (element.closest('button:not([data-board-image], [data-board-resize], [data-board-metaphor]), textarea, input, .board-job, .ctx')) return;
     const screen = clientPoint(event);
     if (event.pointerType === 'touch') {
       contacts.current.set(event.pointerId, screen);
       if (contacts.current.size === 2) {
         const [a, b] = [...contacts.current.values()];
-        const camera = preview.camera ?? options.camera;
+        const camera = options.readCamera();
         pinch.current = {
           camera, start: midpoint(a, b), span: Math.max(1, distance(a, b)),
           ids: [...contacts.current.keys()], latest: camera,
         };
         current.current = null;
-        setPreview({ camera });
+        setPreview({});
       }
     }
     if (!pinch.current && !current.current) {
@@ -207,11 +216,13 @@ export function useBoardGestures(options: Options) {
       const center = midpoint(a, b);
       const next = zoomAt(state.camera, state.start, state.camera.zoom * distance(a, b) / state.span);
       state.latest = { ...next, x: next.x + center.x - state.start.x, y: next.y + center.y - state.start.y };
-      setPreview({ camera: state.latest });
+      options.onPreviewCamera(state.latest);
     } else if (current.current?.pointer === event.pointerId) {
       const point = clientPoint(event);
       if (contacts.current.has(event.pointerId)) contacts.current.set(event.pointerId, point);
-      setPreview(gesturePreview(current.current, point, options));
+      const next = gesturePreview(current.current, point, options);
+      if (next.camera) options.onPreviewCamera(next.camera);
+      else if (current.current.gesture.kind !== 'pan') setPreview(next);
     }
   }
 
@@ -219,7 +230,8 @@ export function useBoardGestures(options: Options) {
     contacts.current.delete(event.pointerId);
     if (pinch.current) {
       if (!pinch.current.ids.includes(event.pointerId)) return;
-      if (!cancelled) options.onCommit({ camera: pinch.current.latest });
+      if (cancelled) options.onPreviewCamera(null);
+      else options.onCommitCamera(pinch.current.latest);
       pinch.current = null;
       setPreview({});
       return;
@@ -228,24 +240,32 @@ export function useBoardGestures(options: Options) {
     if (!active || active.pointer !== event.pointerId) return;
     current.current = null;
     setPreview({});
-    if (cancelled) return;
+    if (cancelled) {
+      if (active.gesture.kind === 'pan') options.onPreviewCamera(null);
+      return;
+    }
     const { gesture } = active;
     const final = gesturePreview(active, clientPoint(event), options);
     const patch: BoardPatch = {};
-    if (final.camera) patch.camera = final.camera;
+    if (final.camera) { options.onCommitCamera(final.camera); return; }
     if (final.positions && Object.keys(final.positions).length) {
       patch.positions = final.positions;
     }
-    if (final.marks && (gesture.kind === 'move' && gesture.marks.length || final.marks.length !== options.marks.length)) {
-      patch.annotations = final.marks;
+    if (final.marks && gesture.kind === 'move' && gesture.marks.length) {
+      patch.markPoints = Object.fromEntries(final.marks.filter(mark => gesture.marks.includes(mark.id)).map(mark => [mark.id, mark.points]));
     }
-    if (patch.camera || patch.positions || patch.annotations) {
+    if (gesture.kind === 'erase') {
+      const erased = options.marks.filter(mark => gesture.ids.has(mark.id)).map(mark => mark.id);
+      if (erased.length) options.onErase(erased);
+      return;
+    }
+    if (patch.positions || patch.annotations || patch.markPoints) {
       options.onCommit(patch);
       return;
     }
-    if (final.drawing && (active.moved || final.drawing.kind === 'pen' || final.drawing.kind === 'note')) {
-      const mark = final.drawing;
-      if (mark.kind === 'note') options.onNewNote(mark);
+    const mark = final.drawing;
+    if (mark && (active.moved || mark.kind === 'pen' || mark.kind === 'note' || mark.kind === 'prompt')) {
+      if (mark.kind === 'note' || mark.kind === 'prompt') options.onNewText(mark);
       else options.onCommit({ annotations: [...options.marks, mark] });
       options.onSelectMarks([mark.id]);
       return;
@@ -253,7 +273,7 @@ export function useBoardGestures(options: Options) {
     if (final.marquee) {
       const rect = final.marquee;
       options.onSelectMarks(options.marks.filter(mark => intersects(markRect(mark), rect)).map(mark => mark.id));
-      options.onMarqueeImages(Object.keys(options.positions).filter(id => intersects(options.positions[id], rect)));
+      options.onMarqueeImages(Object.keys(options.positions).filter(id => intersects(options.positions[id], rect)), active.shift);
       return;
     }
     if (gesture.kind === 'move') {
@@ -263,12 +283,14 @@ export function useBoardGestures(options: Options) {
           ? options.markSelection.filter(selected => selected !== id) : [...options.markSelection, id];
         options.onActive(null);
         options.onSelectMarks(next);
+        if (!active.shift && options.marks.some(mark => mark.id === id && mark.metaphor)) options.onClickMetaphor(id);
       } else if (!active.shift) {
         options.onSelectMarks([]);
       }
-      if (gesture.image) options.onToggle(gesture.image);
+      if (gesture.image) options.onSelectImage(gesture.image, active.shift);
     } else if (gesture.kind === 'marquee' || gesture.kind === 'pan') {
       options.onSelectMarks([]);
+      options.onMarqueeImages([], false);
       options.onActive(null);
     }
   }
